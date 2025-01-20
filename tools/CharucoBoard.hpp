@@ -1,3 +1,4 @@
+#pragma once
 #include <opencv2/aruco/charuco.hpp>
 #include <opencv2/opencv.hpp>
 #include <iostream>
