@@ -6,7 +6,7 @@
 int main() {
   // Initialize SingleCamera and CharucoBoard
   SingleCamera camera("/home/user/calib_data/1204_stereo/Cam_001/");
-  CharucoBoard_5_5 board(0, 11);
+  CharucoBoard board(BoardConfig5x5);
   cv::Point2f principalPoint(camera.getImage(0).size().width, camera.getImage(0).size().height);
 
   // Detect and refine corners and ids

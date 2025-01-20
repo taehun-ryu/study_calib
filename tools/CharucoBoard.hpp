@@ -2,78 +2,94 @@
 #include <opencv2/aruco/charuco.hpp>
 #include <opencv2/opencv.hpp>
 #include <iostream>
+#include <vector>
 
 /*
- * This is the charuco board list in {3D Vision & Robotics Lab}@UNIST.
+ * This is the charuco board config list in {3D Vision & Robotics Lab}@UNIST.
 */
-class CharucoBoard_6_9
-{
+
+// Configuration structure for Charuco board
+struct CharucoConfig {
+  int rows;                // Number of rows (chessboard squares)
+  int cols;                // Number of columns (chessboard squares)
+  float squareLength;      // Length of a chessboard square (e.g., mm)
+  float markerLength;      // Length of a marker inside the square (e.g., mm)
+  int minId;               // Minimum marker ID
+  int maxId;               // Maximum marker ID
+  cv::aruco::PREDEFINED_DICTIONARY_NAME dictionary; // Predefined dictionary
+};
+
+// Configuration 1: 6x9 board, id: 0~26
+CharucoConfig BoardConfig6x9_1 = {
+  6,   // rows
+  9,   // cols
+  83.f, // squareLength (e.g., mm)
+  62.f, // markerLength (e.g., mm)
+  0,   // minId
+  26,  // maxId
+  cv::aruco::DICT_6X6_100 // dictionary type
+};
+
+// Configuration 2: 6x9 board, id: 27~53
+CharucoConfig BoardConfig6x9_2 = {
+  6,   // rows
+  9,   // cols
+  83.f, // squareLength (e.g., mm)
+  62.f, // markerLength (e.g., mm)
+  27,   // minId
+  53,  // maxId
+  cv::aruco::DICT_6X6_100 // dictionary type
+};
+
+// Configuration 3: 5x5 board, id: 0~11
+CharucoConfig BoardConfig5x5 = {
+  5,   // rows
+  5,  // cols
+  98.f, // squareLength
+  73.f,  // markerLength
+  0,   // minId
+  11,  // maxId
+  cv::aruco::DICT_4X4_50 // dictionary type
+};
+
+// CharucoBoard class supporting multiple configurations
+class CharucoBoard {
  public:
-  CharucoBoard_6_9(int minId, int maxId);
-  ~CharucoBoard_6_9();
-  cv::Ptr<cv::aruco::CharucoBoard> getBoard() { return board_; }
-  cv::Ptr<cv::aruco::Dictionary> getDictionary() { return dictionary_; }
+  CharucoBoard(const CharucoConfig& config);
+  ~CharucoBoard();
+
+  cv::Ptr<cv::aruco::CharucoBoard> getBoard() const { return board_; }
+  cv::Ptr<cv::aruco::Dictionary> getDictionary() const { return dictionary_; }
 
  private:
   cv::Ptr<cv::aruco::CharucoBoard> board_;
   cv::Ptr<cv::aruco::Dictionary> dictionary_;
 };
 
-CharucoBoard_6_9::CharucoBoard_6_9(int minId, int maxId)
-{
-  dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_100);
-  board_ = cv::aruco::CharucoBoard::create(6, 9, 83.f, 62.f, dictionary_); //mm
-  int id = minId;
-  for (size_t i = 0; i <= board_->ids.size(); i++)
-  {
-    if (id > maxId + 1)
-    {
-      std::cout << "Warning: maxId reached" << std::endl;
+// Constructor implementation
+CharucoBoard::CharucoBoard(const CharucoConfig& config) {
+  // Load dictionary
+  dictionary_ = cv::aruco::getPredefinedDictionary(config.dictionary);
+  // Create Charuco board
+  board_ = cv::aruco::CharucoBoard::create(
+      config.cols, config.rows, config.squareLength, config.markerLength, dictionary_);
+  // Assign marker IDs based on minId and maxId
+  int id = config.minId;
+  for (size_t i = 0; i < board_->ids.size(); i++) {
+    if (id > config.maxId) {
+      std::cout << "Warning: maxId reached for configuration" << std::endl;
       break;
     }
     board_->ids[i] = id++;
   }
 }
 
-CharucoBoard_6_9::~CharucoBoard_6_9() {}
+CharucoBoard::~CharucoBoard() {}
 
-class CharucoBoard_5_5
-{
- public:
-  CharucoBoard_5_5(int minId, int maxId);
-  ~CharucoBoard_5_5();
-  cv::Ptr<cv::aruco::CharucoBoard> getBoard() { return board_; }
-  cv::Ptr<cv::aruco::Dictionary> getDictionary() { return dictionary_; }
-
- private:
-  cv::Ptr<cv::aruco::CharucoBoard> board_;
-  cv::Ptr<cv::aruco::Dictionary> dictionary_;
-};
-
-CharucoBoard_5_5::CharucoBoard_5_5(int minId, int maxId)
-{
-  dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_100);
-  board_ = cv::aruco::CharucoBoard::create(5, 5, 98.f, 73.f, dictionary_); //mm
-  int id = minId;
-  for (size_t i = 0; i <= board_->ids.size(); i++)
-  {
-    if (id > maxId + 1)
-    {
-      std::cout << "Warning: maxId reached" << std::endl;
-      break;
-    }
-    board_->ids[i] = id++;
-  }
-}
-
-CharucoBoard_5_5::~CharucoBoard_5_5()
-{
-}
-
-void showCharucoBoard(const cv::Ptr<cv::aruco::CharucoBoard>& board, const std::string& windowName)
-{
+// Function to display a Charuco board
+void showCharucoBoard(const CharucoBoard& board, const std::string& windowName) {
   cv::Mat boardImage;
-  board->draw(cv::Size(600, 500), boardImage, 10, 1);
+  board.getBoard()->draw(cv::Size(600, 500), boardImage, 10, 1);
   cv::imshow(windowName, boardImage);
   cv::waitKey(0);
 }

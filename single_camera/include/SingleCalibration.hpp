@@ -15,7 +15,7 @@ namespace RefinementConfig {
   const cv::TermCriteria termCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.01);
 }
 
-void detectAndRefineCorners(SingleCamera& camera, CharucoBoard_5_5& board,
+void detectAndRefineCorners(SingleCamera& camera, CharucoBoard& board,
                             std::vector<std::vector<cv::Point2f>>& allCorners, std::vector<std::vector<int>>& allIds)
 {
   // Get the ChArUco board and dictionary
@@ -272,76 +272,6 @@ cv::Mat optimizeHomography(const cv::Mat& H_init,
   }
 
   return H_optimized;
-}
-
-
-
-cv::Mat estimateInitialIntrinsic(const std::vector<cv::Mat>& homographies) {
-  cv::Mat A = cv::Mat::zeros(2 * homographies.size(), 6, CV_64F);
-
-  for (size_t i = 0; i < homographies.size(); ++i) {
-    cv::Mat H = homographies[i];
-
-    double h11 = H.at<double>(0, 0);
-    double h12 = H.at<double>(0, 1);
-    double h21 = H.at<double>(1, 0);
-    double h22 = H.at<double>(1, 1);
-    double h31 = H.at<double>(2, 0);
-    double h32 = H.at<double>(2, 1);
-
-    // Populate matrix A
-    A.at<double>(2 * i, 0) = h11 * h12;
-    A.at<double>(2 * i, 1) = h11 * h22 + h21 * h12;
-    A.at<double>(2 * i, 2) = h21 * h22;
-    A.at<double>(2 * i, 3) = h31 * h12;
-    A.at<double>(2 * i, 4) = h31 * h22 + h32 * h12;
-    A.at<double>(2 * i, 5) = h32 * h22;
-
-    A.at<double>(2 * i + 1, 0) = h11 * h11 - h12 * h12;
-    A.at<double>(2 * i + 1, 1) = 2 * (h11 * h21 - h12 * h22);
-    A.at<double>(2 * i + 1, 2) = h21 * h21 - h22 * h22;
-    A.at<double>(2 * i + 1, 3) = h31 * h11 - h32 * h12;
-    A.at<double>(2 * i + 1, 4) = 2 * (h31 * h21 - h32 * h22);
-    A.at<double>(2 * i + 1, 5) = h31 * h31 - h32 * h32;
-  }
-
-  // Solve A * b = 0
-  cv::Mat w, u, vt;
-  cv::SVD::compute(A, w, u, vt);
-  cv::Mat b = vt.row(vt.rows - 1).t();
-  std::cout << "b: " << b << std::endl;
-
-  // Extract intrinsic parameters
-  double omega = b.at<double>(0)*b.at<double>(2)*b.at<double>(5) - b.at<double>(1)*b.at<double>(1)*b.at<double>(5)
-                 - b.at<double>(0)*b.at<double>(4)*b.at<double>(4) + 2 * b.at<double>(1)*b.at<double>(3)*b.at<double>(4)
-                 - b.at<double>(2)*b.at<double>(3)*b.at<double>(3);
-  double d = b.at<double>(0)*b.at<double>(2) - b.at<double>(1)*b.at<double>(1);
-
-  std::cout << "Omega: " << omega << std::endl;
-  std::cout << "d: " << d << std::endl;
-
-  // Check for invalid values
-  // if (d == 0 || b.at<double>(0) == 0) {
-  //   std::cerr << "Error: Division by zero detected. Returning identity matrix." << std::endl;
-  //   return cv::Mat::eye(3, 3, CV_64F); // Return identity matrix as fallback
-  // }
-  // if (omega < 0) {
-  //   std::cerr << "Error: Omega is negative. Cannot compute square root." << std::endl;
-  //   return cv::Mat::eye(3, 3, CV_64F);
-  // }
-
-  // Compute intrinsic parameters safely
-  double alpha = std::sqrt(omega / (d * b.at<double>(0)));
-  double beta = std::sqrt((omega / (d * d)) * b.at<double>(0));
-  double gamma = std::sqrt(std::abs(omega / (d * d * b.at<double>(0)))) * b.at<double>(1); // abs to prevent nan
-  double uc = (b.at<double>(1)*b.at<double>(4) - b.at<double>(2)*b.at<double>(3)) / d;
-  double vc = (b.at<double>(1)*b.at<double>(3) - b.at<double>(0)*b.at<double>(4)) / d;
-
-  cv::Mat intrinsic = (cv::Mat_<double>(3, 3) << alpha, gamma, uc,
-                                                 0, beta, vc,
-                                                 0, 0, 1);
-
-  return intrinsic;
 }
 
 // Helper function to calculate the V matrix from homographies
