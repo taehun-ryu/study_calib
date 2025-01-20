@@ -49,7 +49,7 @@ CharucoConfig BoardConfig5x5 = {
   73.f,  // markerLength
   0,   // minId
   11,  // maxId
-  cv::aruco::DICT_4X4_50 // dictionary type
+  cv::aruco::DICT_6X6_100 // dictionary type
 };
 
 // CharucoBoard class supporting multiple configurations
@@ -60,6 +60,7 @@ class CharucoBoard {
 
   cv::Ptr<cv::aruco::CharucoBoard> getBoard() const { return board_; }
   cv::Ptr<cv::aruco::Dictionary> getDictionary() const { return dictionary_; }
+  void showCharucoBoard(const std::string& windowName);
 
  private:
   cv::Ptr<cv::aruco::CharucoBoard> board_;
@@ -87,9 +88,9 @@ CharucoBoard::CharucoBoard(const CharucoConfig& config) {
 CharucoBoard::~CharucoBoard() {}
 
 // Function to display a Charuco board
-void showCharucoBoard(const CharucoBoard& board, const std::string& windowName) {
+void CharucoBoard::showCharucoBoard(const std::string& windowName) {
   cv::Mat boardImage;
-  board.getBoard()->draw(cv::Size(600, 500), boardImage, 10, 1);
+  getBoard()->draw(cv::Size(600, 500), boardImage, 10, 1);
   cv::imshow(windowName, boardImage);
   cv::waitKey(0);
 }
