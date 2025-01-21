@@ -5,7 +5,7 @@
 
 int main() {
   // Initialize SingleCamera and CharucoBoard
-  SingleCamera camera("/home/user/calib_data/1204_stereo/Cam_001/");
+  SingleCamera camera("/home/user/calib_data/1204_stereo/Cam_002/");
   cv::Point2f principalPoint(camera.getImage(0).size().width, camera.getImage(0).size().height);
 
   CharucoBoard board(BoardConfig5x5);
@@ -71,7 +71,7 @@ int main() {
   }
   // 3. Estimate initial intrinsic matrix
   cv::Mat K_init = estimateInitialIntrinsicLLT(homographies);
-  std::cout << "K_init: " << K_init << std::endl;
+  std::cout << "K_init: " << std::endl << K_init << std::endl;
 
   // 4. Estimate initial extrinsic matrix
   std::vector<cv::Mat> rotationMatrices;
@@ -81,10 +81,59 @@ int main() {
   // 5. Estimate radial lens distortion
   cv::Mat D_init;
   initializeDistortion(allObjPoints2D, allCornersImg, homographies, principalPoint, D_init);
-  std::cout << "D_init: " << D_init << std::endl;
+  std::cout << "D_init :" << std::endl;
+  std::cout << "  k1: " << D_init.at<double>(0,0) << std::endl;
+  std::cout << "  k2: " << D_init.at<double>(1,0) << std::endl;
+  std::cout << "  p1: " << D_init.at<double>(2,0) << std::endl;
+  std::cout << "  p2: " << D_init.at<double>(3,0) << std::endl;
+  std::cout << "  k3: " << D_init.at<double>(4,0) << std::endl;
 
   // 6. Optimize total projection error
+  ceres::Problem problem;
+  double K[5] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2)};
+  double D[5] = {D_init.at<double>(0, 0), D_init.at<double>(1, 0), D_init.at<double>(2, 0), D_init.at<double>(3, 0), D_init.at<double>(4, 0)};
 
+  for (size_t i = 0; i < allObjPoints3D.size(); ++i) {
+    double rvec[3], tvec[3];
+    cv::Rodrigues(rotationMatrices[i], cv::Mat(3, 1, CV_64F, rvec));
+    memcpy(tvec, translationVectors[i].ptr<double>(), 3 * sizeof(double));
+
+    for (size_t j = 0; j < allObjPoints3D[i].size(); ++j) {
+      cv::Point3f obj = allObjPoints3D[i][j];
+      cv::Point2f img = allCornersImg[i][j];
+
+      ceres::LossFunction* loss_function = new ceres::HuberLoss(1.0);
+      problem.AddResidualBlock(
+        new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 4, 5>(
+            new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
+        loss_function,  // 손실 함수 추가
+        rvec, tvec, K, D);
+
+    }
+  }
+
+  // Solver 옵션 설정
+  ceres::Solver::Options options;
+  // Levenberg-Marquardt
+  options.linear_solver_type = ceres::DENSE_SCHUR;
+  options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+  //options.trust_region_strategy_type = ceres::DOGLEG;
+  options.initial_trust_region_radius = 1e10;
+  options.min_lm_diagonal = 1e-2;
+  options.max_lm_diagonal = 1e32;
+  options.max_num_iterations = 200;
+  options.minimizer_progress_to_stdout = false;
+
+  // Solve
+  ceres::Solver::Summary summary;
+  ceres::Solve(options, &problem, &summary);
+
+  // 결과 출력
+  std::cout << summary.FullReport() << "\n";
+  std::cout << "Optimized K: fx=" << K[0] << ", fy=" << K[1]
+            << ", cx=" << K[2] << ", cy=" << K[3] << ", s=" << K[4] << "\n";
+  std::cout << "Optimized D: k1=" << D[0] << ", k2=" << D[1]
+            << ", p1=" << D[2] << ", p2=" << D[3] << ", k3=" << D[4] << "\n";
 
   return 0;
 }

@@ -23,8 +23,8 @@ struct CharucoConfig {
 CharucoConfig BoardConfig6x9_1 = {
   6,   // rows
   9,   // cols
-  83.f, // squareLength (e.g., mm)
-  62.f, // markerLength (e.g., mm)
+  0.083f, // squareLength (e.g., m)
+  0.062f, // markerLength (e.g., m)
   0,   // minId
   26,  // maxId
   cv::aruco::DICT_6X6_100 // dictionary type
@@ -34,8 +34,8 @@ CharucoConfig BoardConfig6x9_1 = {
 CharucoConfig BoardConfig6x9_2 = {
   6,   // rows
   9,   // cols
-  83.f, // squareLength (e.g., mm)
-  62.f, // markerLength (e.g., mm)
+  0.083f, // squareLength (e.g., m)
+  0.062f, // markerLength (e.g., m)
   27,   // minId
   53,  // maxId
   cv::aruco::DICT_6X6_100 // dictionary type
@@ -45,8 +45,8 @@ CharucoConfig BoardConfig6x9_2 = {
 CharucoConfig BoardConfig5x5 = {
   5,   // rows
   5,  // cols
-  98.f, // squareLength
-  73.f,  // markerLength
+  0.098f, // squareLength
+  0.073f,  // markerLength
   0,   // minId
   11,  // maxId
   cv::aruco::DICT_6X6_100 // dictionary type

@@ -4,6 +4,8 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
 #include <ceres/ceres.h>
+#include <ceres/rotation.h>
+
 #include "Camera.hpp"
 #include "CharucoBoard.hpp"
 
@@ -243,9 +245,9 @@ cv::Mat optimizeHomography(const cv::Mat& H_init,
   for (size_t i = 0; i < objPoints.size(); ++i) {
     problem.AddResidualBlock(
         new ceres::AutoDiffCostFunction<HomographyResidual, 2, 9>( // residual dimension: 2, homography's dimension: 9
-            new HomographyResidual(objPoints[i], imgPoints[i])),
-        nullptr,  // 손실 함수
-        H);       // 최적화 변수
+            new HomographyResidual(objPoints[i], imgPoints[i])),   // cost function
+        nullptr,                                                   // loss function
+        H);                                                        // optimization values
   }
 
   // Solver 옵션 설정
@@ -384,12 +386,12 @@ struct PlumbBobResidual {
 
   template <typename T>
   bool operator()(const T* const params, T* residual) const {
-    // Parameters: params = [k1, k2, k3, t1, t2]
+    // Parameters: params = [k1, k2, p1, p2, k3]
     T k1 = params[0];
     T k2 = params[1];
-    T k3 = params[2];
-    T t1 = params[3];
-    T t2 = params[4];
+    T p1 = params[2];
+    T p2 = params[3];
+    T k3 = params[4];
 
     T xImg = xPix_ - T(principal_x_);
     T yImg = yPix_ - T(principal_y_);
@@ -401,8 +403,8 @@ struct PlumbBobResidual {
     T radial = T(1.0) + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2; // 1 + k1 * r^2 + k2 * r^4 + k3 * r^6
 
     // Tangential distortion
-    T tangential_x = T(2.0) * t1 * (xImg) * (yImg) + t2 * (r2 + T(2.0) * (xImg) * (xImg));
-    T tangential_y = t1 * (r2 + T(2.0) * (yImg) * (yImg)) + T(2.0) * t2 * (xImg) * (yImg);
+    T tangential_x = T(2.0) * p1 * (xImg) * (yImg) + p2 * (r2 + T(2.0) * (xImg) * (xImg));
+    T tangential_y = p1 * (r2 + T(2.0) * (yImg) * (yImg)) + T(2.0) * p2 * (xImg) * (yImg);
 
     // Distorted coordinates
     T distorted_x = radial * (xImg) + tangential_x + T(principal_x_);
@@ -416,12 +418,12 @@ struct PlumbBobResidual {
   }
 
  private:
-  const double xPix_;           // 이상적인 x 좌표(pinhole camera projection point)
-  const double yPix_;           // 이상적인 y 좌표(pinhole camera projection point)
-  const double observed_x_;  // 관측된 x 좌표
-  const double observed_y_;  // 관측된 y 좌표
-  const double principal_x_; // 주점 x 좌표
-  const double principal_y_; // 주점 y 좌표
+  const double xPix_;
+  const double yPix_;
+  const double observed_x_;
+  const double observed_y_;
+  const double principal_x_;
+  const double principal_y_;
 };
 
 void initializeDistortion(const std::vector<std::vector<cv::Point2f>>& allObjPoints2D,
@@ -432,7 +434,7 @@ void initializeDistortion(const std::vector<std::vector<cv::Point2f>>& allObjPoi
 {
   ceres::Problem problem;
 
-  // 최적화 변수: [k1, k2, k3, t1, t2]
+  // Parameters: params = [k1, k2, p1, p2, k3]
   double params[5] = {0.0, 0.0, 0.0, 0.0, 0.0}; // 초기값 설정
 
   for (size_t i = 0; i < allObjPoints2D.size(); i++) {
@@ -448,8 +450,8 @@ void initializeDistortion(const std::vector<std::vector<cv::Point2f>>& allObjPoi
       problem.AddResidualBlock(
           new ceres::AutoDiffCostFunction<PlumbBobResidual, 2, 5>(
               new PlumbBobResidual(u.x, u.y, udot.x, udot.y, principalPoint.x, principalPoint.y)),
-          nullptr,  // 손실 함수
-          params);  // 최적화 변수
+          nullptr,
+          params);
     }
   }
   // Solver 옵션 설정
@@ -467,3 +469,48 @@ void initializeDistortion(const std::vector<std::vector<cv::Point2f>>& allObjPoi
   D_init.at<double>(3, 0) = params[3];
   D_init.at<double>(4, 0) = params[4];
 }
+
+struct CalibrationReprojectionError
+{
+  CalibrationReprojectionError(double obj_x, double obj_y, double img_x, double img_y) :
+    obj_x_(obj_x), obj_y_(obj_y), img_x_(img_x), img_y_(img_y) {}
+
+  template <typename T>
+  bool operator()(const T* const rvec,  // Rotation vector (Rodrigues)
+                  const T* const tvec,  // Translation vector
+                  const T* const K,     // Intrinsics: [fx, fy, cx, cy]
+                  const T* const D,     // Distortion: [k1, k2, p1, p2, k3]
+                  T* residual) const {
+    // 카메라 외재 파라미터를 적용하여 3D 점을 변환
+    T p_w[3] = {T(obj_x_), T(obj_y_), T(1.0)};
+    T p_c[3];
+    ceres::AngleAxisRotatePoint(rvec, p_w, p_c);
+    p_c[0] += tvec[0];
+    p_c[1] += tvec[1];
+    p_c[2] += tvec[2];
+
+    // 카메라 내재 파라미터 적용
+    T x = p_c[0] / p_c[2];
+    T y = p_c[1] / p_c[2];
+
+    // D = [k1, k2, p1, p2, k3]
+    T r2 = x * x + y * y;
+    T radial_distortion = T(1.0) + D[0] * r2 + D[1] * r2 * r2 + D[4] * r2 * r2 * r2;
+    T x_distorted = x * radial_distortion + T(2.0) * D[2] * x * y + D[3] * (r2 + T(2.0) * x * x);
+    T y_distorted = y * radial_distortion + D[2] * (r2 + T(2.0) * y * y) + T(2.0) * D[3] * x * y;
+
+    // K = [fx, fy, cx, cy]
+    T predicted_x = K[0] * x_distorted + K[2];
+    T predicted_y = K[1] * y_distorted + K[3];
+
+    // 잔여값 계산
+    residual[0] = predicted_x - T(img_x_);
+    residual[1] = predicted_y - T(img_y_);
+
+    return true;
+  }
+
+ private:
+  double obj_x_, obj_y_;   // 3D world coordinates
+  double img_x_, img_y_;   // 2D pixel coordinates
+};
