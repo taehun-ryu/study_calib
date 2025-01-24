@@ -66,7 +66,7 @@ int main() {
     // 2-4. Optimize the homography
     H = optimizeHomography(H, allObjPoints2D[i], allCornersImg[i]);
     H /= H.at<double>(2, 2); // for h33 = 1
-    //visualizeProjection(camera.getImage(i), allObjPoints3D[i], allCornersImg[i], H);
+    //visualizeHomographyProjection(camera.getImage(i), allObjPoints3D[i], allCornersImg[i], H);
     homographies.push_back(H);
   }
   // 3. Estimate initial intrinsic matrix
@@ -93,22 +93,38 @@ int main() {
   double K[5] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2)};
   double D[5] = {D_init.at<double>(0, 0), D_init.at<double>(1, 0), D_init.at<double>(2, 0), D_init.at<double>(3, 0), D_init.at<double>(4, 0)};
 
+  // 파라미터 블록 설정 (K, D는 공유)
+  problem.AddParameterBlock(K, 4);  // [fx, fy, cx, cy]
+  problem.AddParameterBlock(D, 5);  // [k1, k2, p1, p2, k3]
+
+  // 이미지마다 rvec, tvec 추가
+  std::vector<std::array<double, 3>> all_rvecs(allObjPoints3D.size());
+  std::vector<std::array<double, 3>> all_tvecs(allObjPoints3D.size());
+
   for (size_t i = 0; i < allObjPoints3D.size(); ++i) {
-    double rvec[3], tvec[3];
-    cv::Rodrigues(rotationMatrices[i], cv::Mat(3, 1, CV_64F, rvec));
-    memcpy(tvec, translationVectors[i].ptr<double>(), 3 * sizeof(double));
+    cv::Rodrigues(rotationMatrices[i], cv::Mat(3, 1, CV_64F, all_rvecs[i].data()));
+    memcpy(all_tvecs[i].data(), translationVectors[i].ptr<double>(), 3 * sizeof(double));
+
+    // 각 이미지에 대해 rvec, tvec을 파라미터 블록으로 추가
+    problem.AddParameterBlock(all_rvecs[i].data(), 3);
+    problem.AddParameterBlock(all_tvecs[i].data(), 3);
 
     for (size_t j = 0; j < allObjPoints3D[i].size(); ++j) {
       cv::Point3f obj = allObjPoints3D[i][j];
       cv::Point2f img = allCornersImg[i][j];
 
       ceres::LossFunction* loss_function = new ceres::HuberLoss(1.0);
+
+      // Residual 추가
       problem.AddResidualBlock(
         new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 4, 5>(
             new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
-        loss_function,  // 손실 함수 추가
-        rvec, tvec, K, D);
-
+        loss_function,
+        all_rvecs[i].data(),  // 이미지 i의 rvec
+        all_tvecs[i].data(),  // 이미지 i의 tvec
+        K,                    // 공유된 K
+        D                     // 공유된 D
+      );
     }
   }
 
@@ -122,18 +138,31 @@ int main() {
   options.min_lm_diagonal = 1e-2;
   options.max_lm_diagonal = 1e32;
   options.max_num_iterations = 200;
-  options.minimizer_progress_to_stdout = false;
+  options.minimizer_progress_to_stdout = true;
 
   // Solve
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
   // 결과 출력
-  std::cout << summary.FullReport() << "\n";
-  std::cout << "Optimized K: fx=" << K[0] << ", fy=" << K[1]
-            << ", cx=" << K[2] << ", cy=" << K[3] << ", s=" << K[4] << "\n";
-  std::cout << "Optimized D: k1=" << D[0] << ", k2=" << D[1]
-            << ", p1=" << D[2] << ", p2=" << D[3] << ", k3=" << D[4] << "\n";
+  std::vector<cv::Mat> rvecs, tvecs;
+  convertVecArray2VecCVMat(all_rvecs, rvecs);
+  convertVecArray2VecCVMat(all_tvecs, tvecs);
+  cv::Mat K_optim = (cv::Mat_<double>(3, 3) << K[0], K[4], K[2],
+                                               0.0, K[1], K[3],
+                                               0.0, 0.0, 1.0);
+  cv::Mat D_optim = cv::Mat(1, 5, CV_64F, D).clone();
+  std::cout << "Optimized K: " << K_optim << std::endl;
+  std::cout << "Optimized D: " << D_optim << std::endl;
+
+  // 7. Evaluate optimization result
+  double reprojection_err, rmse;
+  rmse = calculateRMSE(allObjPoints3D, allCornersImg, rvecs, tvecs, K_optim, D_optim);
+  reprojection_err = calculateReprojectionError(allObjPoints3D, allCornersImg, rvecs, tvecs, K_optim, D_optim);
+  std::cout << "RMSE: " << rmse << std::endl;
+  std::cout << "Reprojection Error: " << reprojection_err << std::endl;
+  validateDistortionCorrection(camera.getImage(0), K_optim, D_optim);
+  visualizeReprojection(camera.getImage(0), allObjPoints3D[0], allCornersImg[0], rvecs[0], tvecs[0], K_optim, D_optim);
 
   return 0;
 }

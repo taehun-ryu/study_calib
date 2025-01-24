@@ -64,7 +64,7 @@ void detectAndRefineCorners(SingleCamera& camera, CharucoBoard& board,
   }
 }
 
-void visualizeProjection(const cv::Mat& image,
+void visualizeHomographyProjection(const cv::Mat& image,
                               const std::vector<cv::Point3f>& objPoints,
                               const std::vector<cv::Point2f>& imgPoints,
                               const cv::Mat& H)
@@ -482,7 +482,7 @@ struct CalibrationReprojectionError
                   const T* const D,     // Distortion: [k1, k2, p1, p2, k3]
                   T* residual) const {
     // 카메라 외재 파라미터를 적용하여 3D 점을 변환
-    T p_w[3] = {T(obj_x_), T(obj_y_), T(1.0)};
+    T p_w[3] = {T(obj_x_), T(obj_y_), T(0.0)};
     T p_c[3];
     ceres::AngleAxisRotatePoint(rvec, p_w, p_c);
     p_c[0] += tvec[0];
@@ -514,3 +514,118 @@ struct CalibrationReprojectionError
   double obj_x_, obj_y_;   // 3D world coordinates
   double img_x_, img_y_;   // 2D pixel coordinates
 };
+
+void convertVecArray2VecCVMat(const std::vector<std::array<double, 3>>& all_rvecs, // 기존 std::array<double, 3> 벡터
+                  std::vector<cv::Mat>& all_rvecs_mat)
+{
+  all_rvecs_mat.clear(); // 결과 벡터 초기화
+
+  for (const auto& rvec : all_rvecs) {
+    // std::array<double, 3>를 cv::Mat으로 변환
+    cv::Mat rvec_mat = cv::Mat(3, 1, CV_64F, (void*)rvec.data()).clone();
+
+    // 변환된 rvec_mat을 all_rvecs_mat에 추가
+    all_rvecs_mat.push_back(rvec_mat);
+  }
+}
+
+
+double calculateReprojectionError(const std::vector<std::vector<cv::Point3f>>& objPoints,
+                                  const std::vector<std::vector<cv::Point2f>>& imgPoints,
+                                  const std::vector<cv::Mat>& rvecs,
+                                  const std::vector<cv::Mat>& tvecs,
+                                  const cv::Mat& K,
+                                  const cv::Mat& D)
+{
+
+  double totalError = 0.0;
+  int totalPoints = 0;
+
+  for (size_t i = 0; i < objPoints.size(); i++) {
+    std::vector<cv::Point2f> projectedPoints;
+    cv::projectPoints(objPoints[i], rvecs[i], tvecs[i], K, D, projectedPoints);
+
+    // Calculate error for each point
+    for (size_t j = 0; j < imgPoints[i].size(); j++) {
+      double error = cv::norm(projectedPoints[j] - imgPoints[i][j]);
+      totalError += error;
+    }
+    totalPoints += objPoints[i].size();
+  }
+
+  return totalError / totalPoints; // 평균 재투영 오차 반환
+}
+
+double calculateRMSE(const std::vector<std::vector<cv::Point3f>>& objPoints,
+                                              const std::vector<std::vector<cv::Point2f>>& imgPoints,
+                                              const std::vector<cv::Mat>& rvecs,
+                                              const std::vector<cv::Mat>& tvecs,
+                                              const cv::Mat& K,
+                                              const cv::Mat& D)
+{
+
+  double totalSquaredError = 0.0;
+  int totalPoints = 0;
+
+  for (size_t i = 0; i < objPoints.size(); i++) {
+    std::vector<cv::Point2f> projectedPoints;
+    cv::projectPoints(objPoints[i], rvecs[i], tvecs[i], K, D, projectedPoints);
+
+    for (size_t j = 0; j < imgPoints[i].size(); j++) {
+      double error = cv::norm(projectedPoints[j] - imgPoints[i][j]);
+      totalSquaredError += error * error;
+    }
+    totalPoints += objPoints[i].size();
+  }
+
+  double mse = totalSquaredError / totalPoints;
+  double rmse = std::sqrt(mse);
+
+  return rmse;
+}
+
+void validateDistortionCorrection(const cv::Mat& image,
+                                  const cv::Mat& K,
+                                  const cv::Mat& D)
+{
+  cv::Mat undistortedImage;
+  cv::undistort(image, undistortedImage, K, D);
+
+  // 원본 이미지와 보정된 이미지 시각적 비교
+  cv::imshow("Original Image", image);
+  cv::imshow("Undistorted Image", undistortedImage);
+  cv::waitKey(0);
+}
+
+void visualizeReprojection(const cv::Mat& image,
+                          const std::vector<cv::Point3f>& objPoints,
+                          const std::vector<cv::Point2f>& imgPoints,
+                          const cv::Mat& rvec,
+                          const cv::Mat& tvec,
+                          const cv::Mat& K,
+                          const cv::Mat& D)
+{
+
+  // 이미지 복사
+  cv::Mat displayImage = image.clone();
+
+  // 3D 포인트를 재투영
+  std::vector<cv::Point2f> projectedPoints;
+  cv::projectPoints(objPoints, rvec, tvec, K, D, projectedPoints);
+
+  // 실제 관측된 점과 재투영된 점을 시각화
+  for (size_t i = 0; i < imgPoints.size(); ++i) {
+    // 실제 관측된 점 (파란색 원)
+    cv::circle(displayImage, imgPoints[i], 5, cv::Scalar(255, 0, 0), -1);
+
+    // 재투영된 점 (빨간색 원)
+    cv::circle(displayImage, projectedPoints[i], 5, cv::Scalar(0, 0, 255), -1);
+
+    // 두 점을 연결하는 선 (흰색)
+    cv::line(displayImage, imgPoints[i], projectedPoints[i], cv::Scalar(255, 255, 255), 1);
+  }
+
+  // 결과 시각화
+  cv::imshow("Reprojection Visualization", displayImage);
+  cv::waitKey(0);
+}
