@@ -9,7 +9,8 @@
 #include "Camera.hpp"
 #include "CharucoBoard.hpp"
 
-//TODO: Eigen이랑 혼합해서 사용하는 방법 찾아보기
+//TODO: CV::Mat이랑 Eigen::MatrixXd이랑 혼합해서 사용하는 방법 찾아보기
+//TODO: Optimization 관련 structure 및 function 모듈화
 
 namespace RefinementConfig {
   const cv::Size subPixWindowSize(5, 5);
@@ -454,11 +455,11 @@ void initializeDistortion(const std::vector<std::vector<cv::Point2f>>& allObjPoi
           params);
     }
   }
-  // Solver 옵션 설정
+  // Solver Option
   ceres::Solver::Options options;
   options.linear_solver_type = ceres::DENSE_QR;
   options.minimizer_progress_to_stdout = false;
-  // Solver 실행
+  // Solver
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
@@ -480,8 +481,9 @@ struct CalibrationReprojectionError
                   const T* const tvec,  // Translation vector
                   const T* const K,     // Intrinsics: [fx, fy, cx, cy]
                   const T* const D,     // Distortion: [k1, k2, p1, p2, k3]
-                  T* residual) const {
-    // 카메라 외재 파라미터를 적용하여 3D 점을 변환
+                  T* residual) const
+  {
+
     T p_w[3] = {T(obj_x_), T(obj_y_), T(0.0)};
     T p_c[3];
     ceres::AngleAxisRotatePoint(rvec, p_w, p_c);
@@ -489,7 +491,6 @@ struct CalibrationReprojectionError
     p_c[1] += tvec[1];
     p_c[2] += tvec[2];
 
-    // 카메라 내재 파라미터 적용
     T x = p_c[0] / p_c[2];
     T y = p_c[1] / p_c[2];
 
@@ -503,7 +504,6 @@ struct CalibrationReprojectionError
     T predicted_x = K[0] * x_distorted + K[2];
     T predicted_y = K[1] * y_distorted + K[3];
 
-    // 잔여값 계산
     residual[0] = predicted_x - T(img_x_);
     residual[1] = predicted_y - T(img_y_);
 
@@ -520,11 +520,9 @@ void convertVecArray2VecCVMat(const std::vector<std::array<double, 3>>& all_rvec
 {
   all_rvecs_mat.clear(); // 결과 벡터 초기화
 
-  for (const auto& rvec : all_rvecs) {
-    // std::array<double, 3>를 cv::Mat으로 변환
+  for (const auto& rvec : all_rvecs)
+  {
     cv::Mat rvec_mat = cv::Mat(3, 1, CV_64F, (void*)rvec.data()).clone();
-
-    // 변환된 rvec_mat을 all_rvecs_mat에 추가
     all_rvecs_mat.push_back(rvec_mat);
   }
 }
@@ -553,7 +551,7 @@ double calculateReprojectionError(const std::vector<std::vector<cv::Point3f>>& o
     totalPoints += objPoints[i].size();
   }
 
-  return totalError / totalPoints; // 평균 재투영 오차 반환
+  return totalError / totalPoints;
 }
 
 double calculateRMSE(const std::vector<std::vector<cv::Point3f>>& objPoints,
@@ -591,7 +589,6 @@ void validateDistortionCorrection(const cv::Mat& image,
   cv::Mat undistortedImage;
   cv::undistort(image, undistortedImage, K, D);
 
-  // 원본 이미지와 보정된 이미지 시각적 비교
   cv::imshow("Original Image", image);
   cv::imshow("Undistorted Image", undistortedImage);
   cv::waitKey(0);
@@ -605,27 +602,17 @@ void visualizeReprojection(const cv::Mat& image,
                           const cv::Mat& K,
                           const cv::Mat& D)
 {
-
-  // 이미지 복사
   cv::Mat displayImage = image.clone();
 
-  // 3D 포인트를 재투영
   std::vector<cv::Point2f> projectedPoints;
   cv::projectPoints(objPoints, rvec, tvec, K, D, projectedPoints);
 
-  // 실제 관측된 점과 재투영된 점을 시각화
+  // visualize setting
   for (size_t i = 0; i < imgPoints.size(); ++i) {
-    // 실제 관측된 점 (파란색 원)
     cv::circle(displayImage, imgPoints[i], 5, cv::Scalar(255, 0, 0), -1);
-
-    // 재투영된 점 (빨간색 원)
     cv::circle(displayImage, projectedPoints[i], 5, cv::Scalar(0, 0, 255), -1);
-
-    // 두 점을 연결하는 선 (흰색)
     cv::line(displayImage, imgPoints[i], projectedPoints[i], cv::Scalar(255, 255, 255), 1);
   }
-
-  // 결과 시각화
   cv::imshow("Reprojection Visualization", displayImage);
   cv::waitKey(0);
 }

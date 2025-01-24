@@ -93,11 +93,10 @@ int main() {
   double K[5] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2)};
   double D[5] = {D_init.at<double>(0, 0), D_init.at<double>(1, 0), D_init.at<double>(2, 0), D_init.at<double>(3, 0), D_init.at<double>(4, 0)};
 
-  // 파라미터 블록 설정 (K, D는 공유)
+  // Add K and D to parameter
   problem.AddParameterBlock(K, 4);  // [fx, fy, cx, cy]
   problem.AddParameterBlock(D, 5);  // [k1, k2, p1, p2, k3]
 
-  // 이미지마다 rvec, tvec 추가
   std::vector<std::array<double, 3>> all_rvecs(allObjPoints3D.size());
   std::vector<std::array<double, 3>> all_tvecs(allObjPoints3D.size());
 
@@ -105,7 +104,7 @@ int main() {
     cv::Rodrigues(rotationMatrices[i], cv::Mat(3, 1, CV_64F, all_rvecs[i].data()));
     memcpy(all_tvecs[i].data(), translationVectors[i].ptr<double>(), 3 * sizeof(double));
 
-    // 각 이미지에 대해 rvec, tvec을 파라미터 블록으로 추가
+    // Add R and t per image to parameter blocks
     problem.AddParameterBlock(all_rvecs[i].data(), 3);
     problem.AddParameterBlock(all_tvecs[i].data(), 3);
 
@@ -115,25 +114,24 @@ int main() {
 
       ceres::LossFunction* loss_function = new ceres::HuberLoss(1.0);
 
-      // Residual 추가
+      // Residual
       problem.AddResidualBlock(
         new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 4, 5>(
             new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
         loss_function,
-        all_rvecs[i].data(),  // 이미지 i의 rvec
-        all_tvecs[i].data(),  // 이미지 i의 tvec
-        K,                    // 공유된 K
-        D                     // 공유된 D
+        all_rvecs[i].data(),  // rvec on image[i]
+        all_tvecs[i].data(),  // tvec on image[i]
+        K,                    // K
+        D                     // D
       );
     }
   }
 
-  // Solver 옵션 설정
+  // Solver Option
   ceres::Solver::Options options;
   // Levenberg-Marquardt
   options.linear_solver_type = ceres::DENSE_SCHUR;
   options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-  //options.trust_region_strategy_type = ceres::DOGLEG;
   options.initial_trust_region_radius = 1e10;
   options.min_lm_diagonal = 1e-2;
   options.max_lm_diagonal = 1e32;
@@ -144,7 +142,6 @@ int main() {
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
 
-  // 결과 출력
   std::vector<cv::Mat> rvecs, tvecs;
   convertVecArray2VecCVMat(all_rvecs, rvecs);
   convertVecArray2VecCVMat(all_tvecs, tvecs);
