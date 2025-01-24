@@ -136,11 +136,12 @@ int main() {
   options.min_lm_diagonal = 1e-2;
   options.max_lm_diagonal = 1e32;
   options.max_num_iterations = 200;
-  options.minimizer_progress_to_stdout = true;
+  options.minimizer_progress_to_stdout = false;
 
   // Solve
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
+  std::cout << summary.FullReport() << std::endl;
 
   std::vector<cv::Mat> rvecs, tvecs;
   convertVecArray2VecCVMat(all_rvecs, rvecs);
