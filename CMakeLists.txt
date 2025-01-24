@@ -10,3 +10,4 @@ find_package(Ceres REQUIRED)
 # 서브 디렉토리 추가
 add_subdirectory(tools)
 add_subdirectory(single_camera)
+add_subdirectory(stereo_camera)
