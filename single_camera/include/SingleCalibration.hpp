@@ -65,6 +65,61 @@ void detectAndRefineCorners(SingleCamera& camera, CharucoBoard& board,
   }
 }
 
+// Overloading detectAndRefineCorners()
+void detectAndRefineCorners(const std::vector<cv::Mat>& images,
+                            CharucoBoard& board,
+                            std::vector<std::vector<cv::Point2f>>& allCorners,
+                            std::vector<std::vector<int>>& allIds)
+{
+  cv::Ptr<cv::aruco::CharucoBoard> charucoBoard = board.getBoard();
+  cv::Ptr<cv::aruco::Dictionary> dictionary = board.getDictionary();
+
+  for (size_t i = 0; i < images.size(); ++i)
+  {
+    const cv::Mat& image = images[i];
+    if (image.empty())
+    {
+      std::cerr << "Empty image at index " << i << std::endl;
+      continue;
+    }
+
+    cv::Mat gray;
+    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+
+    std::vector<int> markerIds;
+    std::vector<std::vector<cv::Point2f>> markerCorners;
+    cv::aruco::detectMarkers(gray, dictionary, markerCorners, markerIds);
+
+    if (markerIds.empty())
+    {
+      std::cout << "No markers detected in image " << i << std::endl;
+      continue;
+    }
+
+    std::vector<cv::Point2f> charucoCorners;
+    std::vector<int> charucoIds;
+    cv::aruco::interpolateCornersCharuco(markerCorners, markerIds, gray,
+                                         charucoBoard,
+                                         charucoCorners, charucoIds);
+
+    if (charucoIds.empty())
+    {
+      std::cout << "No ChArUco corners detected in image " << i << std::endl;
+      continue;
+    }
+
+    cv::cornerSubPix(gray,
+                     charucoCorners,
+                     RefinementConfig::subPixWindowSize,
+                     RefinementConfig::zeroZone,
+                     RefinementConfig::termCriteria);
+
+    allCorners.push_back(charucoCorners);
+    allIds.push_back(charucoIds);
+  }
+}
+
+
 void visualizeHomographyProjection(const cv::Mat& image,
                               const std::vector<cv::Point3f>& objPoints,
                               const std::vector<cv::Point2f>& imgPoints,
