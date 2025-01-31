@@ -91,11 +91,11 @@ int main()
 
   // 6. Optimize total projection error
   ceres::Problem problem;
-  double K[4] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2)};
+  double K[5] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2), K_init.at<double>(0, 1)};
   double D[5] = {D_init.at<double>(0, 0), D_init.at<double>(1, 0), D_init.at<double>(2, 0), D_init.at<double>(3, 0), D_init.at<double>(4, 0)};
 
   // Add K and D to parameter
-  problem.AddParameterBlock(K, 4);  // [fx, fy, cx, cy]
+  problem.AddParameterBlock(K, 5);  // [fx, fy, cx, cy, s]
   problem.AddParameterBlock(D, 5);  // [k1, k2, p1, p2, k3]
 
   std::vector<std::array<double, 3>> all_rvecs(allObjPoints3D.size());
@@ -117,7 +117,7 @@ int main()
 
       // Residual
       problem.AddResidualBlock(
-        new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 4, 5>(
+        new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 5, 5>(
             new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
         loss_function,
         all_rvecs[i].data(),  // rvec on image[i]

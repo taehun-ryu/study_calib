@@ -555,8 +555,8 @@ struct CalibrationReprojectionError
     T x_distorted = x * radial_distortion + T(2.0) * D[2] * x * y + D[3] * (r2 + T(2.0) * x * x);
     T y_distorted = y * radial_distortion + D[2] * (r2 + T(2.0) * y * y) + T(2.0) * D[3] * x * y;
 
-    // K = [fx, fy, cx, cy]
-    T predicted_x = K[0] * x_distorted + K[2];
+    // K = [fx, fy, cx, cy, s]
+    T predicted_x = K[0] * x_distorted + K[4] * y_distorted + K[2];
     T predicted_y = K[1] * y_distorted + K[3];
 
     residual[0] = predicted_x - T(img_x_);
