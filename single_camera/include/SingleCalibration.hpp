@@ -584,39 +584,12 @@ void convertVecArray2VecCVMat(const std::vector<std::array<double, 3>>& all_rvec
 
 
 double calculateReprojectionError(const std::vector<std::vector<cv::Point3f>>& objPoints,
-                                  const std::vector<std::vector<cv::Point2f>>& imgPoints,
-                                  const std::vector<cv::Mat>& rvecs,
-                                  const std::vector<cv::Mat>& tvecs,
-                                  const cv::Mat& K,
-                                  const cv::Mat& D)
-{
-
-  double totalError = 0.0;
-  int totalPoints = 0;
-
-  for (size_t i = 0; i < objPoints.size(); i++) {
-    std::vector<cv::Point2f> projectedPoints;
-    cv::projectPoints(objPoints[i], rvecs[i], tvecs[i], K, D, projectedPoints);
-
-    // Calculate error for each point
-    for (size_t j = 0; j < imgPoints[i].size(); j++) {
-      double error = cv::norm(projectedPoints[j] - imgPoints[i][j]);
-      totalError += error;
-    }
-    totalPoints += objPoints[i].size();
-  }
-
-  return totalError / totalPoints;
-}
-
-double calculateRMSE(const std::vector<std::vector<cv::Point3f>>& objPoints,
                                               const std::vector<std::vector<cv::Point2f>>& imgPoints,
                                               const std::vector<cv::Mat>& rvecs,
                                               const std::vector<cv::Mat>& tvecs,
                                               const cv::Mat& K,
                                               const cv::Mat& D)
 {
-
   double totalSquaredError = 0.0;
   int totalPoints = 0;
 

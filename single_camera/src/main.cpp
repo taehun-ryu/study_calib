@@ -3,7 +3,8 @@
 #include "SingleCalibration.hpp"
 
 
-int main() {
+int main()
+{
   // Initialize SingleCamera and CharucoBoard
   SingleCamera camera("/home/user/calib_data/1204_stereo/Cam_002/");
   cv::Point2f principalPoint(camera.getImage(0).size().width, camera.getImage(0).size().height);
@@ -154,11 +155,9 @@ int main() {
   std::cout << "Optimized D: " << D_optim << std::endl;
 
   // 7. Evaluate optimization result
-  double reprojection_err, rmse;
-  rmse = calculateRMSE(allObjPoints3D, allCornersImg, rvecs, tvecs, K_optim, D_optim);
+  double reprojection_err;
   reprojection_err = calculateReprojectionError(allObjPoints3D, allCornersImg, rvecs, tvecs, K_optim, D_optim);
-  std::cout << "RMSE: " << rmse << std::endl;
-  std::cout << "Reprojection Error: " << reprojection_err << std::endl;
+  std::cout << "Reprojection Error(RMSE): " << reprojection_err << std::endl;
   validateDistortionCorrection(camera.getImage(0), K_optim, D_optim);
   visualizeReprojection(camera.getImage(0), allObjPoints3D[0], allCornersImg[0], rvecs[0], tvecs[0], K_optim, D_optim);
 
