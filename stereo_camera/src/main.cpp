@@ -3,157 +3,11 @@
 #include "SingleCalibration.hpp"
 #include "StereoCalibration.hpp"
 
-double calibrateCamera(SingleCamera& camera,
-                       CharucoBoard& board,
-                       std::vector<std::vector<cv::Point3f>>& allObjPoints3D,
-                       std::vector<std::vector<cv::Point2f>>& allCornersImg,
-                       std::vector<std::vector<int>>& allIds,
-                       cv::Mat& K_optim,
-                       cv::Mat& D_optim,
-                       std::vector<cv::Mat>& rvecs,
-                       std::vector<cv::Mat>& tvecs)
-{
-  cv::Point2f principalPoint(camera.getImage(0).size().width, camera.getImage(0).size().height);
-  // Detect and refine corners and ids
-  detectAndRefineCorners(camera, board, allCornersImg, allIds);
-
-  // Calibration
-  // 1. Generate 3D charuco board points
-  allObjPoints3D.resize(allIds.size());
-  for (size_t i = 0; i < allIds.size(); i++)
-  {
-    unsigned int nCorners = (unsigned int)allIds[i].size();
-    CV_Assert(nCorners >0 && nCorners == allCornersImg[i].size());
-    allObjPoints3D[i].reserve(nCorners);
-    for (unsigned int j = 0; j < nCorners; j++)
-    {
-      int pointId = allIds[i][j];
-      CV_Assert(pointId >= 0 && pointId < (int)board.getBoard()->chessboardCorners.size());
-      allObjPoints3D[i].push_back(board.getBoard()->chessboardCorners[pointId]);
-    }
-  }
-  // Convert 3D points to 2D points for use convenience
-  std::vector<std::vector<cv::Point2f>> allObjPoints2D; // x_w, y_w
-  allObjPoints2D.resize(allObjPoints3D.size());
-  for (size_t i = 0; i < allObjPoints3D.size(); i++)
-  {
-    unsigned int nPoints = (unsigned int)allObjPoints3D[i].size();
-    allObjPoints2D[i].reserve(nPoints);
-    for (unsigned int j = 0; j < nPoints; j++)
-    {
-      cv::Point3f point3D = allObjPoints3D[i][j];
-      allObjPoints2D[i].emplace_back(point3D.x, point3D.y);
-    }
-  }
-
-  // 2. Find Homography for each image
-  std::vector<cv::Mat> homographies;
-  cv::Mat normalzationMatObj;
-  cv::Mat normalzationMatImg;
-  for(size_t i = 0; i < allCornersImg.size(); i++)
-  {
-    // 2-1. Normalize the object and image points and find homography(normalized)
-    std::vector<cv::Point2f> normalizedObjPoints;
-    std::vector<cv::Point2f> normalizedImgPoints;
-    normalzationMatObj = calculateNormalizationMat(allObjPoints2D[i]);
-    normalzationMatImg = calculateNormalizationMat(allCornersImg[i]);
-    normalizePoints(allObjPoints2D[i], normalizedObjPoints, normalzationMatObj);
-    normalizePoints(allCornersImg[i], normalizedImgPoints, normalzationMatImg);
-    // 2-2. Find initial homography(normalized)
-    cv::Mat H_normal = findHomographyForEachImage(normalizedObjPoints, normalizedImgPoints);
-    // 2-3. Denormalize the homography
-    cv::Mat H = normalzationMatImg.inv() * H_normal * normalzationMatObj;
-    // 2-4. Optimize the homography
-    H = optimizeHomography(H, allObjPoints2D[i], allCornersImg[i]);
-    H /= H.at<double>(2, 2); // for h33 = 1
-    //visualizeHomographyProjection(camera.getImage(i), allObjPoints3D[i], allCornersImg[i], H);
-    homographies.push_back(H);
-  }
-  // 3. Estimate initial intrinsic matrix
-  cv::Mat K_init = estimateInitialIntrinsicLLT(homographies);
-
-  // 4. Estimate initial extrinsic matrix
-  std::vector<cv::Mat> rotationMatrices;
-  std::vector<cv::Mat> translationVectors;
-  initializeExtrinsic(homographies, K_init, rotationMatrices, translationVectors);
-
-  // 5. Estimate radial lens distortion
-  cv::Mat D_init;
-  initializeDistortion(allObjPoints2D, allCornersImg, homographies, principalPoint, D_init);
-
-  // 6. Optimize total projection error
-  ceres::Problem problem;
-  double K[5] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2)};
-  double D[5] = {D_init.at<double>(0, 0), D_init.at<double>(1, 0), D_init.at<double>(2, 0), D_init.at<double>(3, 0), D_init.at<double>(4, 0)};
-
-  // Add K and D to parameter
-  problem.AddParameterBlock(K, 4);  // [fx, fy, cx, cy]
-  problem.AddParameterBlock(D, 5);  // [k1, k2, p1, p2, k3]
-
-  std::vector<std::array<double, 3>> all_rvecs(allObjPoints3D.size());
-  std::vector<std::array<double, 3>> all_tvecs(allObjPoints3D.size());
-
-  for (size_t i = 0; i < allObjPoints3D.size(); ++i) {
-    cv::Rodrigues(rotationMatrices[i], cv::Mat(3, 1, CV_64F, all_rvecs[i].data()));
-    memcpy(all_tvecs[i].data(), translationVectors[i].ptr<double>(), 3 * sizeof(double));
-
-    // Add R and t per image to parameter blocks
-    problem.AddParameterBlock(all_rvecs[i].data(), 3);
-    problem.AddParameterBlock(all_tvecs[i].data(), 3);
-
-    for (size_t j = 0; j < allObjPoints3D[i].size(); ++j) {
-      cv::Point3f obj = allObjPoints3D[i][j];
-      cv::Point2f img = allCornersImg[i][j];
-
-      ceres::LossFunction* loss_function = new ceres::HuberLoss(1.0);
-
-      // Residual
-      problem.AddResidualBlock(
-        new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 4, 5>(
-            new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
-        loss_function,
-        all_rvecs[i].data(),  // rvec on image[i]
-        all_tvecs[i].data(),  // tvec on image[i]
-        K,                    // K
-        D                     // D
-      );
-    }
-  }
-
-  // Solver Option
-  ceres::Solver::Options options;
-  // Levenberg-Marquardt
-  options.linear_solver_type = ceres::DENSE_SCHUR;
-  options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-  options.initial_trust_region_radius = 1e10;
-  options.min_lm_diagonal = 1e-2;
-  options.max_lm_diagonal = 1e32;
-  options.max_num_iterations = 200;
-  options.minimizer_progress_to_stdout = false;
-
-  // Solve
-  ceres::Solver::Summary summary;
-  ceres::Solve(options, &problem, &summary);
-
-  convertVecArray2VecCVMat(all_rvecs, rvecs);
-  convertVecArray2VecCVMat(all_tvecs, tvecs);
-  K_optim = (cv::Mat_<double>(3, 3) << K[0], K[4], K[2],
-                                               0.0, K[1], K[3],
-                                               0.0, 0.0, 1.0);
-  D_optim = cv::Mat(1, 5, CV_64F, D).clone();
-
-  // evaluate
-  double reprojection_err;
-  reprojection_err = calculateReprojectionError(allObjPoints3D, allCornersImg, rvecs, tvecs, K_optim, D_optim);
-
-  return reprojection_err;
-}
-
 int main()
 {
   // 0. Initialize stereo camera and board
-  SingleCamera left_camera("/home/ryu/calib_data/2025-w/1204_stereo/Cam_001/");
-  SingleCamera right_camera("/home/ryu/calib_data/2025-w/1204_stereo/Cam_002/");
+  SingleCamera left_camera("/home/user/calib_data/1204_stereo/Cam_001/");
+  SingleCamera right_camera("/home/user/calib_data/1204_stereo/Cam_002/");
   CharucoBoard board(BoardConfig5x5);
 
   // 1. Calibrate single cameras
@@ -182,11 +36,12 @@ int main()
 
   // 2. Find common coners and ids
   // 2D coners
-  int numImages = left_camera.size();
+  size_t numImages = left_camera.size();
+  // Corners and ids
   std::vector<std::vector<int>> commonIds(numImages);
   std::vector<std::vector<cv::Point2f>> commonCorners_left(numImages);
   std::vector<std::vector<cv::Point2f>> commonCorners_right(numImages);
-  for (int i = 0; i < numImages; ++i)
+  for (size_t i = 0; i < numImages; ++i)
   {
     std::vector<int> thisCommonIds;
     std::vector<cv::Point2f> thiscommonCorners_left;
@@ -223,6 +78,14 @@ int main()
     }
     commonCorners3D[i] = temp3D;
   }
+
+  // Visualize common points and projections
+  // for (size_t i = 0; i < numImages; i++)
+  // {
+  //   visualizeCommonCorners(left_camera.getImage(i), right_camera.getImage(i),
+  //                          allImgPoints2D_left[i], allImgPoints2D_right[i],
+  //                          commonCorners_left[i], commonCorners_right[i]);
+  // }
 
   // 3. Initialize extrinsic paramters
   // Convert to Rodrigues
@@ -263,20 +126,126 @@ int main()
   }
   t_stereo_init /= (double)numImages;
 
+  // Right -> Left
   std::cout << "Initial R_stereo = \n" << R_stereo_init << std::endl;
   std::cout << "Initial t_stereo = \n" << t_stereo_init << std::endl;
 
   // 4. Run stereo BA
-  // TODO: optimization 구현
+  //FIXME: 좀 더 robust해야함. 이상하게 수렴하는 경우가 존재.
+  ceres::Problem problem;
+
+  std::vector<std::array<double, 3>> all_rvecs_left(commonCorners3D.size());
+  std::vector<std::array<double, 3>> all_tvecs_left(commonCorners3D.size());
+  std::vector<std::array<double, 3>> all_rvecs_right(commonCorners3D.size());
+  std::vector<std::array<double, 3>> all_tvecs_right(commonCorners3D.size());
+
+  // Add intrinsic and distortion to parameter block
+  double K_l[5] = {K_left.at<double>(0, 0), K_left.at<double>(1, 1), K_left.at<double>(0, 2), K_left.at<double>(1, 2), K_left.at<double>(0, 1)};
+  double d_l[5] = {D_left.at<double>(0, 0), D_left.at<double>(1, 0), D_left.at<double>(2, 0), D_left.at<double>(3, 0), D_left.at<double>(4, 0)};
+  double K_r[5] = {K_right.at<double>(0, 0), K_right.at<double>(1, 1), K_right.at<double>(0, 2), K_right.at<double>(1, 2), K_right.at<double>(0, 1)};
+  double d_r[5] = {D_right.at<double>(0, 0), D_right.at<double>(1, 0), D_right.at<double>(2, 0), D_right.at<double>(3, 0), D_right.at<double>(4, 0)};
+
+  problem.AddParameterBlock(K_l, 5);  // [fx, fy, cx, cy]
+  problem.AddParameterBlock(d_l, 5);  // [k1, k2, p1, p2, k3]
+  problem.AddParameterBlock(K_r, 5);
+  problem.AddParameterBlock(d_r, 5);
+
+  //Add extrinsic to parameter block
+  cv::Mat rvec_stereo_init;
+  cv::Rodrigues(R_stereo_init, rvec_stereo_init);
+  double rvec_init[3] = {rvec_stereo_init.at<double>(0,0), rvec_stereo_init.at<double>(1,0), rvec_stereo_init.at<double>(2,0)};
+  double tvec_init[3] = {t_stereo_init.at<double>(0,0), t_stereo_init.at<double>(1,0), t_stereo_init.at<double>(2,0)};
+
+  problem.AddParameterBlock(rvec_init, 3);
+  problem.AddParameterBlock(tvec_init, 3);
+
+  for (size_t i = 0; i < commonCorners3D.size(); i++)
+  {
+    cv::Rodrigues(R_left[i], cv::Mat(3, 1, CV_64F, all_rvecs_left[i].data()));
+    memcpy(all_tvecs_left[i].data(), tvecs_left[i].ptr<double>(), 3 * sizeof(double));
+    cv::Rodrigues(R_right[i], cv::Mat(3, 1, CV_64F, all_rvecs_right[i].data()));
+    memcpy(all_tvecs_right[i].data(), tvecs_right[i].ptr<double>(), 3 * sizeof(double));
+
+    // Add R and t per image to parameter blocks
+    problem.AddParameterBlock(all_rvecs_left[i].data(), 3);
+    problem.AddParameterBlock(all_tvecs_left[i].data(), 3);
+    problem.AddParameterBlock(all_rvecs_right[i].data(), 3);
+    problem.AddParameterBlock(all_tvecs_right[i].data(), 3);
+
+    for (size_t j = 0; j < commonCorners3D[i].size(); j++)
+    {
+      cv::Point3f obj = commonCorners3D[i][j];
+      cv::Point2f left_img = commonCorners_left[i][j];
+      cv::Point2f right_img = commonCorners_right[i][j];
+
+      ceres::LossFunction* loss_function = new ceres::HuberLoss(1.0);
+
+      problem.AddResidualBlock(
+        new ceres::AutoDiffCostFunction<StereoCalibrationResidual, 4, 5, 5, 5, 5, 3, 3, 3, 3, 3, 3>(
+          new StereoCalibrationResidual(obj.x, obj.y, left_img.x, left_img.y, right_img.x, right_img.y)
+        ),
+        loss_function,
+        K_l,
+        d_l,
+        K_r,
+        d_r,
+        all_rvecs_left[i].data(),
+        all_tvecs_left[i].data(),
+        all_rvecs_right[i].data(),
+        all_tvecs_right[i].data(),
+        rvec_init,
+        tvec_init
+      );
+    }
+  }
+
+  ceres::Solver::Options options;
+  // Levenberg-Marquardt
+  options.linear_solver_type = ceres::DENSE_SCHUR;
+  options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+  options.initial_trust_region_radius = 1e10;
+  options.min_lm_diagonal = 1e-2;
+  options.max_lm_diagonal = 1e32;
+  options.max_num_iterations = 200;
+  options.minimizer_progress_to_stdout = false;
+
+  ceres::Solver::Summary summary;
+  ceres::Solve(options, &problem, &summary);
+  std::cout << summary.FullReport() << std::endl;
+
+  // Optimization values
+  // Intrinsic - Left camera
+  cv::Mat K_left_optim = (cv::Mat_<double>(3, 3) << K_l[0], K_l[4], K_l[2],
+                                               0.0, K_l[1], K_l[3],
+                                               0.0, 0.0, 1.0);
+  cv::Mat D_left_optim = cv::Mat(1, 5, CV_64F, d_l).clone();
+  std::cout << "Optimized left - K: " << K_left_optim << std::endl;
+  std::cout << "Optimized left - D: " << D_left_optim << std::endl;
+
+  // Intrinsic - Right camera
+  cv::Mat K_right_optim = (cv::Mat_<double>(3, 3) << K_r[0], K_r[4], K_r[2],
+                                              0.0, K_r[1], K_r[3],
+                                              0.0, 0.0, 1.0);
+  cv::Mat D_right_optim = cv::Mat(1, 5, CV_64F, d_r).clone();
+  std::cout << "Optimized right - K: " << K_right_optim << std::endl;
+  std::cout << "Optimized right - D: " << D_right_optim << std::endl;
+
+  cv::Mat r_stereo = (cv::Mat_<double>(3, 1) << rvec_init[0], rvec_init[1], rvec_init[2]);
+  cv::Mat t_stereo = (cv::Mat_<double>(3, 1) << tvec_init[0], tvec_init[1], tvec_init[2]);
+  cv::Mat R_stereo;
+  cv::Rodrigues(r_stereo, R_stereo);
+  std::cout << "Caution: This is Right -> Left" << std::endl;
+  std::cout << "Optimized - R_stereo = \n" << R_stereo << std::endl;
+  std::cout << "Optimized - t_stereo = \n" << t_stereo << std::endl;
 
   // 5. Evaluation
   cv::Mat R1, R2, P1, P2, Q;
   cv::Size imageSize(left_camera.getImage(0).cols, left_camera.getImage(0).rows);
   cv::stereoRectify(
-    K_left,  D_left,
-    K_right, D_right,
+    K_left_optim,  D_left_optim,
+    K_right_optim, D_right_optim,
     imageSize,
-    R_stereo_init, t_stereo_init,
+    R_stereo, t_stereo,
     R1, R2, P1, P2, Q,
     0,
     0.0, // alpha
