@@ -133,11 +133,12 @@ int main()
   // Levenberg-Marquardt
   options.linear_solver_type = ceres::DENSE_SCHUR;
   options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-  options.initial_trust_region_radius = 1e10;
-  options.min_lm_diagonal = 1e-2;
-  options.max_lm_diagonal = 1e32;
-  options.max_num_iterations = 200;
-  options.minimizer_progress_to_stdout = false;
+  options.initial_trust_region_radius = 1e3;
+  options.min_lm_diagonal = 1e-6;
+  options.max_lm_diagonal = 1e6;
+  options.max_num_iterations = 500;
+  options.minimizer_progress_to_stdout = true;
+  options.logging_type = ceres::PER_MINIMIZER_ITERATION;
 
   // Solve
   ceres::Solver::Summary summary;

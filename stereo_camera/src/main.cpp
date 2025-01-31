@@ -131,7 +131,6 @@ int main()
   std::cout << "Initial t_stereo = \n" << t_stereo_init << std::endl;
 
   // 4. Run stereo BA
-  //FIXME: 좀 더 robust해야함. 이상하게 수렴하는 경우가 존재.
   ceres::Problem problem;
 
   std::vector<std::array<double, 3>> all_rvecs_left(commonCorners3D.size());
@@ -149,6 +148,12 @@ int main()
   problem.AddParameterBlock(d_l, 5);  // [k1, k2, p1, p2, k3]
   problem.AddParameterBlock(K_r, 5);
   problem.AddParameterBlock(d_r, 5);
+
+  // Constant setting
+  problem.SetParameterBlockConstant(K_l);
+  problem.SetParameterBlockConstant(d_l);
+  problem.SetParameterBlockConstant(K_r);
+  problem.SetParameterBlockConstant(d_r);
 
   //Add extrinsic to parameter block
   cv::Mat rvec_stereo_init;
@@ -203,11 +208,12 @@ int main()
   // Levenberg-Marquardt
   options.linear_solver_type = ceres::DENSE_SCHUR;
   options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-  options.initial_trust_region_radius = 1e10;
-  options.min_lm_diagonal = 1e-2;
-  options.max_lm_diagonal = 1e32;
-  options.max_num_iterations = 200;
-  options.minimizer_progress_to_stdout = false;
+  options.initial_trust_region_radius = 1e3;
+  options.min_lm_diagonal = 1e-6;
+  options.max_lm_diagonal = 1e6;
+  options.max_num_iterations = 500;
+  options.minimizer_progress_to_stdout = true;
+  options.logging_type = ceres::PER_MINIMIZER_ITERATION;
 
   ceres::Solver::Summary summary;
   ceres::Solve(options, &problem, &summary);
@@ -241,6 +247,16 @@ int main()
   // 5. Evaluation
   cv::Mat R1, R2, P1, P2, Q;
   cv::Size imageSize(left_camera.getImage(0).cols, left_camera.getImage(0).rows);
+  // cv::stereoRectify(
+  //   K_left,  D_left,
+  //   K_right, D_right,
+  //   imageSize,
+  //   R_stereo_init, t_stereo_init,
+  //   R1, R2, P1, P2, Q,
+  //   0,
+  //   0.0, // alpha
+  //   imageSize
+  // );
   cv::stereoRectify(
     K_left_optim,  D_left_optim,
     K_right_optim, D_right_optim,

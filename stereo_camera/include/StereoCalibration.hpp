@@ -93,7 +93,7 @@ double calibrateCamera(SingleCamera& camera,
   double D[5] = {D_init.at<double>(0, 0), D_init.at<double>(1, 0), D_init.at<double>(2, 0), D_init.at<double>(3, 0), D_init.at<double>(4, 0)};
 
   // Add K and D to parameter
-  problem.AddParameterBlock(K, 4);  // [fx, fy, cx, cy]
+  problem.AddParameterBlock(K, 5);  // [fx, fy, cx, cy, s]
   problem.AddParameterBlock(D, 5);  // [k1, k2, p1, p2, k3]
 
   std::vector<std::array<double, 3>> all_rvecs(allObjPoints3D.size());
@@ -115,7 +115,7 @@ double calibrateCamera(SingleCamera& camera,
 
       // Residual
       problem.AddResidualBlock(
-        new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 4, 5>(
+        new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 5, 5>(
             new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
         loss_function,
         all_rvecs[i].data(),  // rvec on image[i]
@@ -131,11 +131,12 @@ double calibrateCamera(SingleCamera& camera,
   // Levenberg-Marquardt
   options.linear_solver_type = ceres::DENSE_SCHUR;
   options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-  options.initial_trust_region_radius = 1e10;
-  options.min_lm_diagonal = 1e-2;
-  options.max_lm_diagonal = 1e32;
-  options.max_num_iterations = 200;
-  options.minimizer_progress_to_stdout = false;
+  options.initial_trust_region_radius = 1e3;
+  options.min_lm_diagonal = 1e-6;
+  options.max_lm_diagonal = 1e6;
+  options.max_num_iterations = 500;
+  options.minimizer_progress_to_stdout = true;
+  options.logging_type = ceres::PER_MINIMIZER_ITERATION;
 
   // Solve
   ceres::Solver::Summary summary;
@@ -144,8 +145,8 @@ double calibrateCamera(SingleCamera& camera,
   convertVecArray2VecCVMat(all_rvecs, rvecs);
   convertVecArray2VecCVMat(all_tvecs, tvecs);
   K_optim = (cv::Mat_<double>(3, 3) << K[0], K[4], K[2],
-                                               0.0, K[1], K[3],
-                                               0.0, 0.0, 1.0);
+                                        0.0, K[1], K[3],
+                                        0.0, 0.0, 1.0);
   D_optim = cv::Mat(1, 5, CV_64F, D).clone();
 
   // evaluate
@@ -328,9 +329,9 @@ std::array<T, 3> StereoCalibrationResidual::transformWorldRightLeft(const T* src
   // Right camera coordinates -> Left camera coordinates
   std::array<T, 3> dst;
   ceres::AngleAxisRotatePoint(rvec_stereo, p_c, dst.data());
-  dst[0] += tvec_stereo[0];
-  dst[1] += tvec_stereo[1];
-  dst[2] += tvec_stereo[2];
+  dst[0] -= tvec_stereo[0];
+  dst[1] -= tvec_stereo[1];
+  dst[2] -= tvec_stereo[2];
 
   return dst;
 }
