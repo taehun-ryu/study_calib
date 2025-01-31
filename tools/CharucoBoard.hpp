@@ -60,24 +60,28 @@ class CharucoBoard {
 
   cv::Ptr<cv::aruco::CharucoBoard> getBoard() const { return board_; }
   cv::Ptr<cv::aruco::Dictionary> getDictionary() const { return dictionary_; }
+  CharucoConfig getConfig() const {return config_;}
   void showCharucoBoard(const std::string& windowName);
 
  private:
   cv::Ptr<cv::aruco::CharucoBoard> board_;
   cv::Ptr<cv::aruco::Dictionary> dictionary_;
+  CharucoConfig config_;
 };
 
 // Constructor implementation
-CharucoBoard::CharucoBoard(const CharucoConfig& config) {
+CharucoBoard::CharucoBoard(const CharucoConfig& config)
+{
+  config_ = config;
   // Load dictionary
   dictionary_ = cv::aruco::getPredefinedDictionary(config.dictionary);
   // Create Charuco board
   board_ = cv::aruco::CharucoBoard::create(
-      config.cols, config.rows, config.squareLength, config.markerLength, dictionary_);
+      config_.cols, config_.rows, config_.squareLength, config_.markerLength, dictionary_);
   // Assign marker IDs based on minId and maxId
-  int id = config.minId;
+  int id = config_.minId;
   for (size_t i = 0; i < board_->ids.size(); i++) {
-    if (id > config.maxId) {
+    if (id > config_.maxId) {
       std::cout << "Warning: maxId reached for configuration" << std::endl;
       break;
     }
