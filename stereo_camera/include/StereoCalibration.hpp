@@ -19,7 +19,11 @@ double calibrateCamera(SingleCamera& camera,
                        std::vector<cv::Mat>& rvecs,
                        std::vector<cv::Mat>& tvecs)
 {
-  cv::Point2f principalPoint(camera.getImage(0).size().width, camera.getImage(0).size().height);
+  double image_height = camera.getImage(0).size().height;
+  double image_width = camera.getImage(0).size().width;
+  cv::Point2f principalPoint;
+  principalPoint.x = image_width / 2.0;
+  principalPoint.y = image_height / 2.0;
   // Detect and refine corners and ids
   detectAndRefineCorners(camera, board, allCornersImg, allIds);
 
@@ -66,7 +70,8 @@ double calibrateCamera(SingleCamera& camera,
     normalizePoints(allObjPoints2D[i], normalizedObjPoints, normalzationMatObj);
     normalizePoints(allCornersImg[i], normalizedImgPoints, normalzationMatImg);
     // 2-2. Find initial homography(normalized)
-    cv::Mat H_normal = findHomographyForEachImage(normalizedObjPoints, normalizedImgPoints);
+    // cv::Mat H_normal = findHomographyForEachImage(normalizedObjPoints, normalizedImgPoints); //FIXME
+    cv::Mat H_normal = cv::findHomography(normalizedObjPoints, normalizedImgPoints, cv::RANSAC);
     // 2-3. Denormalize the homography
     cv::Mat H = normalzationMatImg.inv() * H_normal * normalzationMatObj;
     // 2-4. Optimize the homography
@@ -234,104 +239,64 @@ double computeVerticalErrorRMS(
   return rmsVerticalError;
 }
 
-struct StereoCalibrationResidual
+void evaluateStereoCalibration(SingleCamera& left_camera, SingleCamera& right_camera,
+                               cv::Mat& K_left, cv::Mat& D_left, cv::Mat& K_right, cv::Mat& D_right, cv::Mat& R_stereo, cv::Mat& t_stereo,
+                               std::vector<std::vector<cv::Point2f>> commonCorners_left, std::vector<std::vector<cv::Point2f>> commonCorners_right)
 {
-  StereoCalibrationResidual(double common_obj_x, double common_obj_y,
-                            double left_img_x, double left_img_y,
-                            double right_img_x , double right_img_y) :
-    common_obj_x_(common_obj_x), common_obj_y_(common_obj_y), left_img_x_(left_img_x), left_img_y_(left_img_y), right_img_x_(right_img_x), right_img_y_(right_img_y) {}
+  cv::Size imageSize(left_camera.getImage(0).cols, left_camera.getImage(0).rows);
+  cv::Mat R1, R2, P1, P2, Q;
+  cv::stereoRectify(
+    K_left,  D_left,
+    K_right, D_right,
+    imageSize,
+    R_stereo, t_stereo,
+    R1, R2, P1, P2, Q,
+    0,
+    0.0, // alpha
+    imageSize
+  );
+  // Y-axis error
+  double yAxisError = computeVerticalErrorRMS(commonCorners_left, commonCorners_right,
+                                              K_left,  D_left,  R1, P1,
+                                              K_right, D_right, R2, P2);
 
-  template <typename T>
-  bool operator()(const T* const K_left, const T* const d_left,
-                  const T* const K_right, const T* const d_right,
-                  const T* const rvec_left, const T* const tvec_left,
-                  const T* const rvec_right, const T* const tvec_right,
-                  const T* const rvec, const T* tvec,
-                  T* residual) const
+  std::cout << "Y-axis error(RMSE): " << yAxisError << std::endl;
+
+  // Create remap maps for each camera
+  cv::Mat map1L, map2L, map1R, map2R;
+  cv::initUndistortRectifyMap(
+    K_left, D_left, R1, P1,
+    imageSize, CV_32FC1,
+    map1L, map2L
+  );
+  cv::initUndistortRectifyMap(
+    K_right, D_right, R2, P2,
+    imageSize, CV_32FC1,
+    map1R, map2R
+  );
+
+  // Remap the original images -> rectified images
+  size_t numImages = left_camera.size();
+  std::vector<cv::Mat> leftRect(numImages), rightRect(numImages);
+  for (int i = 0; i < numImages; i++)
   {
-    T object_pt[3] = {T(common_obj_x_), T(common_obj_y_), T(0.0)};
-    // World -> Right camera's pixel coordinate
-    auto right_proj = projetWorld2Pixel(object_pt, K_right, d_right, rvec_right, tvec_right);
+    cv::remap(left_camera.getImage(i),  leftRect[i],  map1L, map2L, cv::INTER_LINEAR);
+    cv::remap(right_camera.getImage(i), rightRect[i], map1R, map2R, cv::INTER_LINEAR);
 
-    // 1) World -> Right camera coordinate -> Left camera coordinate
-    auto X_left = transformWorldRightLeft(object_pt, rvec, tvec, rvec_right, tvec_right);
-    // 2) Left camera coordinate -> Left camera's pixel coordinate
-    auto right_proj_to_left = projetCamera2Pixel(X_left.data(), K_left, d_left);
+    cv::Mat sideBySide;
+    cv::hconcat(leftRect[i], rightRect[i], sideBySide);
 
-    residual[0] = right_proj_to_left[0] - T(left_img_x_);
-    residual[1] = right_proj_to_left[1] - T(left_img_y_);
-    residual[2] = right_proj[0] - T(right_img_x_);
-    residual[3] = right_proj[1] - T(right_img_y_);
+    int step = 40;
+    for (int y = 0; y < sideBySide.rows; y += step)
+    {
+      cv::line(sideBySide,
+              cv::Point(0, y),
+              cv::Point(sideBySide.cols - 1, y),
+              cv::Scalar(0, 255, 0),
+              1);
+    }
 
-    return true;
+    cv::imshow("Rectified Pair with horizontal lines", sideBySide);
+    cv::waitKey(0);
   }
-
- private:
-  double common_obj_x_, common_obj_y_;
-  double left_img_x_, left_img_y_;
-  double right_img_x_, right_img_y_;
-
-  template <typename T>
-  std::array<T, 2> projetCamera2Pixel(const T *points3D, const T *K, const T *d)  const;
-  template <typename T>
-  std::array<T, 2> projetWorld2Pixel(const T* points3D, const T* K, const T* d, const T *rvec, const T *tvec)  const;
-  template <typename T>
-  std::array<T, 3> transformWorldRightLeft(const T* srcPoints, const T* rvec_stereo, const T* tvec_stereo, const T *rvec, const T *tvec) const;
-};
-
-template<typename T>
-std::array<T, 2> StereoCalibrationResidual::projetCamera2Pixel(const T* points3D, const T* K, const T* d) const
-{
-  T p_c[3] = {T(points3D[0]), T(points3D[1]), T(points3D[2])};
-
-  T x = p_c[0] / p_c[2];
-  T y = p_c[1] / p_c[2];
-
-  // d = [k1, k2, p1, p2, k3]
-  T r2 = x * x + y * y;
-  T radial_distortion = T(1.0) + d[0] * r2 + d[1] * r2 * r2 + d[4] * r2 * r2 * r2;
-  T x_distorted = x * radial_distortion + T(2.0) * d[2] * x * y + d[3] * (r2 + T(2.0) * x * x);
-  T y_distorted = y * radial_distortion + d[2] * (r2 + T(2.0) * y * y) + T(2.0) * d[3] * x * y;
-
-  // K = [fx, fy, cx, cy]
-  T predicted_x = K[0] * x_distorted + K[4] * y_distorted + K[2];
-  T predicted_y = K[1] * y_distorted + K[3];
-
-  return {predicted_x, predicted_y};
-}
-
-template<typename T>
-std::array<T, 2> StereoCalibrationResidual::projetWorld2Pixel(const T* points3D, const T* K, const T* d, const T *rvec, const T *tvec) const
-{
-  T p_w[3] = {T(points3D[0]), T(points3D[1]), T(0.0)};
-  T p_c[3];
-  ceres::AngleAxisRotatePoint(rvec, p_w, p_c);
-  p_c[0] += tvec[0];
-  p_c[1] += tvec[1];
-  p_c[2] += tvec[2];
-
-  std::array<T, 2> pixel_pt = projetCamera2Pixel(p_c, K, d);
-
-  return {pixel_pt[0], pixel_pt[1]};
-}
-
-template<typename T>
-std::array<T, 3> StereoCalibrationResidual::transformWorldRightLeft(const T* srcPoints, const T* rvec_stereo, const T* tvec_stereo, const T *rvec, const T *tvec) const
-{
-  // World -> Right camera coordinates
-  T p_w[3] = {T(srcPoints[0]), T(srcPoints[1]), T(0.0)};
-  T p_c[3];
-  ceres::AngleAxisRotatePoint(rvec, p_w, p_c);
-  p_c[0] += tvec[0];
-  p_c[1] += tvec[1];
-  p_c[2] += tvec[2];
-
-  // Right camera coordinates -> Left camera coordinates
-  std::array<T, 3> dst;
-  ceres::AngleAxisRotatePoint(rvec_stereo, p_c, dst.data());
-  dst[0] -= tvec_stereo[0];
-  dst[1] -= tvec_stereo[1];
-  dst[2] -= tvec_stereo[2];
-
-  return dst;
 }
