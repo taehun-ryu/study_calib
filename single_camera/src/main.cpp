@@ -6,8 +6,12 @@
 int main()
 {
   // Initialize SingleCamera and CharucoBoard
-  SingleCamera camera("/home/user/calib_data/1204_stereo/Cam_002/");
-  cv::Point2f principalPoint(camera.getImage(0).size().width, camera.getImage(0).size().height);
+  SingleCamera camera("/home/user/calib_data/1204_stereo/Cam_001/");
+  double image_height = camera.getImage(0).size().height;
+  double image_width = camera.getImage(0).size().width;
+  cv::Point2f principalPoint;
+  principalPoint.x = image_width / 2.0;
+  principalPoint.y = image_height / 2.0;
 
   CharucoBoard board(BoardConfig5x5);
   //board.showCharucoBoard("charuco board");
