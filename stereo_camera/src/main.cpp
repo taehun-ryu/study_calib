@@ -6,8 +6,8 @@
 int main()
 {
   // 0. Initialize stereo camera and board
-  SingleCamera left_camera("/home/user/calib_data/1204_stereo/Cam_001/");
-  SingleCamera right_camera("/home/user/calib_data/1204_stereo/Cam_002/");
+  SingleCamera left_camera("/home/ryu/calib_data/1204_stereo/Cam_001/");
+  SingleCamera right_camera("/home/ryu/calib_data/1204_stereo/Cam_002/");
   CharucoBoard board(BoardConfig5x5);
 
   // 1. Calibrate single cameras
@@ -88,7 +88,6 @@ int main()
   // }
 
   // 3. Initialize extrinsic paramters
-  // Option 1: naive approach
   // Convert to Rodrigues
   std::vector<cv::Mat> R_left(numImages), R_right(numImages);
   for (int i = 0; i < numImages; ++i)
@@ -107,17 +106,7 @@ int main()
     t_stereo_candidates[i] = (tvecs_right[i]) - (R_stereo_candidates[i] * tvecs_left[i]);
   }
   // Rotation average
-  cv::Vec3d r_stereo_init(0,0,0);
-  for (int i = 0; i < numImages; ++i)
-  {
-    cv::Mat rvec_temp;
-    cv::Rodrigues(R_stereo_candidates[i], rvec_temp); // 3x1
-    r_stereo_init += cv::Vec3d(rvec_temp.at<double>(0), rvec_temp.at<double>(1), rvec_temp.at<double>(2));
-  }
-  r_stereo_init *= (1.0 / numImages); // mean
-
-  cv::Mat R_stereo_init;
-  cv::Rodrigues(r_stereo_init, R_stereo_init); // vec -> matrix
+  cv::Mat R_stereo_init = averageRotationMatrix(R_stereo_candidates);
 
   // Translation average
   cv::Mat t_stereo_init = cv::Mat::zeros(3,1,CV_64F);
@@ -131,14 +120,164 @@ int main()
   std::cout << "Initial R_stereo = \n" << R_stereo_init << std::endl;
   std::cout << "Initial t_stereo = \n" << t_stereo_init << std::endl;
 
-  // Option 2: Epipolar geometry
+  // 4. Stereo BA
+#ifdef FIX_INTRINSIC
+  std::cout << "Fix intrinsic and distortion parameters"
+#endif
+
+  ceres::Problem problem;
+
+  std::vector<std::array<double, 3>> all_rvecs_left(commonCorners3D.size());
+  std::vector<std::array<double, 3>> all_tvecs_left(commonCorners3D.size());
+  std::vector<std::array<double, 3>> all_rvecs_right(commonCorners3D.size());
+  std::vector<std::array<double, 3>> all_tvecs_right(commonCorners3D.size());
+
+  // Add intrinsic and distortion to parameter block
+  double K_l[5] = {K_left.at<double>(0, 0), K_left.at<double>(1, 1), K_left.at<double>(0, 2), K_left.at<double>(1, 2), K_left.at<double>(0, 1)};
+  double d_l[5] = {D_left.at<double>(0, 0), D_left.at<double>(1, 0), D_left.at<double>(2, 0), D_left.at<double>(3, 0), D_left.at<double>(4, 0)};
+  double K_r[5] = {K_right.at<double>(0, 0), K_right.at<double>(1, 1), K_right.at<double>(0, 2), K_right.at<double>(1, 2), K_right.at<double>(0, 1)};
+  double d_r[5] = {D_right.at<double>(0, 0), D_right.at<double>(1, 0), D_right.at<double>(2, 0), D_right.at<double>(3, 0), D_right.at<double>(4, 0)};
+
+  problem.AddParameterBlock(K_l, 5);  // [fx, fy, cx, cy]
+  problem.AddParameterBlock(d_l, 5);  // [k1, k2, p1, p2, k3]
+  problem.AddParameterBlock(K_r, 5);
+  problem.AddParameterBlock(d_r, 5);
+
+#ifdef FIX_INTRINSIC
+  problem.SetParameterBlockConstant(K_l);
+  problem.SetParameterBlockConstant(d_l);
+  problem.SetParameterBlockConstant(K_r);
+  problem.SetParameterBlockConstant(d_r);
+#else
+  problem.SetParameterBlockVariable(K_l);
+  problem.SetParameterBlockVariable(d_l);
+  problem.SetParameterBlockVariable(K_r);
+  problem.SetParameterBlockVariable(d_r);
+#endif
+
+  //Add extrinsic to parameter block
+  cv::Mat rvec_stereo_init;
+  cv::Rodrigues(R_stereo_init, rvec_stereo_init);
+  double rvec_init[3] = {rvec_stereo_init.at<double>(0,0), rvec_stereo_init.at<double>(1,0), rvec_stereo_init.at<double>(2,0)};
+  double tvec_init[3] = {t_stereo_init.at<double>(0,0), t_stereo_init.at<double>(1,0), t_stereo_init.at<double>(2,0)};
+
+  problem.AddParameterBlock(rvec_init, 3);
+  problem.AddParameterBlock(tvec_init, 3);
+
+  for (size_t i = 0; i < commonCorners3D.size(); i++)
+  {
+    cv::Rodrigues(R_left[i], cv::Mat(3, 1, CV_64F, all_rvecs_left[i].data()));
+    memcpy(all_tvecs_left[i].data(), tvecs_left[i].ptr<double>(), 3 * sizeof(double));
+    cv::Rodrigues(R_right[i], cv::Mat(3, 1, CV_64F, all_rvecs_right[i].data()));
+    memcpy(all_tvecs_right[i].data(), tvecs_right[i].ptr<double>(), 3 * sizeof(double));
+
+    // Add R and t per image to parameter blocks
+    problem.AddParameterBlock(all_rvecs_left[i].data(), 3);
+    problem.AddParameterBlock(all_tvecs_left[i].data(), 3);
+    problem.AddParameterBlock(all_rvecs_right[i].data(), 3);
+    problem.AddParameterBlock(all_tvecs_right[i].data(), 3);
+
+#ifdef FIX_INTRINSIC
+  problem.SetParameterBlockConstant(all_rvecs_left[i].data());
+  problem.SetParameterBlockConstant(all_tvecs_left[i].data());
+  problem.SetParameterBlockConstant(all_rvecs_right[i].data());
+  problem.SetParameterBlockConstant(all_tvecs_right[i].data());
+#else
+  problem.SetParameterBlockVariable(all_rvecs_left[i].data());
+  problem.SetParameterBlockVariable(all_tvecs_left[i].data());
+  problem.SetParameterBlockVariable(all_rvecs_right[i].data());
+  problem.SetParameterBlockVariable(all_tvecs_right[i].data());
+#endif
+
+    for (size_t j = 0; j < commonCorners3D[i].size(); j++)
+    {
+      cv::Point3f obj = commonCorners3D[i][j];
+      cv::Point2f left_img = commonCorners_left[i][j];
+      cv::Point2f right_img = commonCorners_right[i][j];
+
+      ceres::LossFunction* huber_loss_function = new ceres::HuberLoss(0.1);
+
+      problem.AddResidualBlock( // Add stereo reprojection risidual
+        // Cost function
+        StereoReprojectionResidual::Create(obj.x, obj.y, left_img.x, left_img.y, right_img.x, right_img.y),
+        // loss function
+        huber_loss_function,
+        // Optimization values: 10
+        K_l,
+        d_l,
+        K_r,
+        d_r,
+        all_rvecs_left[i].data(),
+        all_tvecs_left[i].data(),
+        all_rvecs_right[i].data(),
+        all_tvecs_right[i].data(),
+        rvec_init,
+        tvec_init
+      );
+      problem.AddResidualBlock( // Add Epipolar Constraint
+        StereoEpipolarResidual::Create(left_img.x, left_img.y, right_img.x, right_img.y),
+        huber_loss_function,
+        K_l,
+        K_r,
+        rvec_init,
+        tvec_init
+      );
+    }
+  }
+
+  // Option
+  ceres::Solver::Options options;
+  // Common
+  options.linear_solver_type = ceres::DENSE_SCHUR;
+  options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+  options.minimizer_progress_to_stdout = true;
+  options.num_threads = 4;
+  options.dense_linear_algebra_library_type = ceres::CUDA;
+  // should test
+  options.initial_trust_region_radius = 1e3;
+  options.max_trust_region_radius = 1e16;
+  options.min_lm_diagonal = 1e-4;
+  options.max_lm_diagonal = 1e4;
+  options.max_num_iterations = 500;
+
+  // Solve
+  ceres::Solver::Summary summary;
+  ceres::Solve(options, &problem, &summary);
+  std::cout << summary.FullReport() << std::endl;
+
+  // Optimization Results
+  // Intrinsic - Left camera
+  cv::Mat K_left_optim = (cv::Mat_<double>(3, 3) << K_l[0], K_l[4], K_l[2],
+                                               0.0, K_l[1], K_l[3],
+                                               0.0, 0.0, 1.0);
+  cv::Mat D_left_optim = cv::Mat(1, 5, CV_64F, d_l).clone();
+  std::cout << "Optimized left - K: " << K_left_optim << std::endl;
+  std::cout << "Optimized left - D: " << D_left_optim << std::endl;
+
+  // Intrinsic - Right camera
+  cv::Mat K_right_optim = (cv::Mat_<double>(3, 3) << K_r[0], K_r[4], K_r[2],
+                                              0.0, K_r[1], K_r[3],
+                                              0.0, 0.0, 1.0);
+  cv::Mat D_right_optim = cv::Mat(1, 5, CV_64F, d_r).clone();
+  std::cout << "Optimized right - K: " << K_right_optim << std::endl;
+  std::cout << "Optimized right - D: " << D_right_optim << std::endl;
+
+  cv::Mat r_stereo = (cv::Mat_<double>(3, 1) << rvec_init[0], rvec_init[1], rvec_init[2]);
+  cv::Mat t_stereo = (cv::Mat_<double>(3, 1) << tvec_init[0], tvec_init[1], tvec_init[2]);
+  cv::Mat R_stereo;
+  cv::Rodrigues(r_stereo, R_stereo);
+  std::cout << "Optimized - R_stereo = \n" << R_stereo << std::endl;
+  std::cout << "Optimized - t_stereo = \n" << t_stereo << std::endl;
 
   // 5. Evaluation
-  // w/ stereo BA
-  // w/o stereo BA
-  // evaluateStereoCalibration(left_camera, right_camera,
-  //                           K_left, D_left, K_right, D_right, R_stereo_init, t_stereo_init,
-  //                           commonCorners_left, commonCorners_right);
+  // w/o Stereo BA
+  evaluateStereoCalibration(left_camera, right_camera,
+                            K_left, D_left, K_right, D_right, R_stereo_init, t_stereo_init,
+                            commonCorners_left, commonCorners_right);
+  // w/ Stereo BA
+  evaluateStereoCalibration(left_camera, right_camera,
+                            K_left_optim, D_left_optim, K_right_optim, D_right_optim, R_stereo, t_stereo,
+                            commonCorners_left, commonCorners_right);
 
   return 0;
 }
