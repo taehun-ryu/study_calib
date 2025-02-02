@@ -6,7 +6,14 @@ add_executable(single_camera src/main.cpp)
 target_include_directories(single_camera PRIVATE include)
 
 # tools 라이브러리 및 OpenCV 라이브러리를 링크
-target_link_libraries(single_camera PRIVATE tools ${OpenCV_LIBS} Eigen3::Eigen Ceres::ceres)
+target_link_libraries(single_camera PRIVATE
+  global_defines
+  single_camera_defines
+  tools
+  ${OpenCV_LIBS}
+  Eigen3::Eigen
+  Ceres::ceres
+)
 
 # 빌드 설정 출력
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")

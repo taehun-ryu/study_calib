@@ -6,4 +6,11 @@ add_executable(stereo_camera src/main.cpp)
 target_include_directories(stereo_camera PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/../single_camera/include)
 
 # tools 라이브러리 및 OpenCV 라이브러리를 링크
-target_link_libraries(stereo_camera PRIVATE tools ${OpenCV_LIBS} Eigen3::Eigen Ceres::ceres)
+target_link_libraries(stereo_camera PRIVATE
+  global_defines
+  stereo_camera_defines
+  tools
+  ${OpenCV_LIBS}
+  Eigen3::Eigen
+  Ceres::ceres
+)
