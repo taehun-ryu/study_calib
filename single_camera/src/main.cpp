@@ -6,7 +6,7 @@
 int main()
 {
   // Initialize SingleCamera and CharucoBoard
-  SingleCamera camera("/home/user/calib_data/1204_stereo/Cam_001/");
+  SingleCamera camera("/home/user/calib_data/1204_stereo/Cam_002/");
   double image_height = camera.getImage(0).size().height;
   double image_width = camera.getImage(0).size().width;
   cv::Point2f principalPoint;
@@ -95,11 +95,19 @@ int main()
 
   // 6. Optimize total projection error
   ceres::Problem problem;
+#if SKEW_COEFFICIENT
   double K[5] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2), K_init.at<double>(0, 1)};
+#else
+  double K[4] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2)};
+#endif
   double D[5] = {D_init.at<double>(0, 0), D_init.at<double>(1, 0), D_init.at<double>(2, 0), D_init.at<double>(3, 0), D_init.at<double>(4, 0)};
 
   // Add K and D to parameter
+#if SKEW_COEFFICIENT
   problem.AddParameterBlock(K, 5);  // [fx, fy, cx, cy, s]
+#else
+  problem.AddParameterBlock(K, 4);
+#endif
   problem.AddParameterBlock(D, 5);  // [k1, k2, p1, p2, k3]
 
   std::vector<std::array<double, 3>> all_rvecs(allObjPoints3D.size());
@@ -121,8 +129,13 @@ int main()
 
       // Residual
       problem.AddResidualBlock(
+#if SKEW_COEFFICIENT
         new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 5, 5>(
             new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
+#else
+        new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 4, 5>(
+            new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
+#endif
         loss_function,
         all_rvecs[i].data(),  // rvec on image[i]
         all_tvecs[i].data(),  // tvec on image[i]
@@ -152,9 +165,15 @@ int main()
   std::vector<cv::Mat> rvecs, tvecs;
   convertVecArray2VecCVMat(all_rvecs, rvecs);
   convertVecArray2VecCVMat(all_tvecs, tvecs);
+#if SKEW_COEFFICIENT
   cv::Mat K_optim = (cv::Mat_<double>(3, 3) << K[0], K[4], K[2],
                                                0.0, K[1], K[3],
                                                0.0, 0.0, 1.0);
+#else
+  cv::Mat K_optim = (cv::Mat_<double>(3, 3) << K[0], 0, K[2],
+                                               0.0, K[1], K[3],
+                                               0.0, 0.0, 1.0);
+#endif
   cv::Mat D_optim = cv::Mat(1, 5, CV_64F, D).clone();
   std::cout << "Optimized K: " << K_optim << std::endl;
   std::cout << "Optimized D: " << D_optim << std::endl;

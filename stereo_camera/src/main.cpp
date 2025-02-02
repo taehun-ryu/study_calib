@@ -3,11 +3,14 @@
 #include "SingleCalibration.hpp"
 #include "StereoCalibration.hpp"
 
-int main()
+#define IS_INTRINSIC_FIXED false
+
+int main(int argc, char** argv)
 {
+  google::InitGoogleLogging(argv[0]);
   // 0. Initialize stereo camera and board
-  SingleCamera left_camera("/home/ryu/calib_data/1204_stereo/Cam_001/");
-  SingleCamera right_camera("/home/ryu/calib_data/1204_stereo/Cam_002/");
+  SingleCamera left_camera("/home/user/calib_data/1204_stereo/Cam_001/");
+  SingleCamera right_camera("/home/user/calib_data/1204_stereo/Cam_002/");
   CharucoBoard board(BoardConfig5x5);
 
   // 1. Calibrate single cameras
@@ -121,10 +124,6 @@ int main()
   std::cout << "Initial t_stereo = \n" << t_stereo_init << std::endl;
 
   // 4. Stereo BA
-#ifdef FIX_INTRINSIC
-  std::cout << "Fix intrinsic and distortion parameters"
-#endif
-
   ceres::Problem problem;
 
   std::vector<std::array<double, 3>> all_rvecs_left(commonCorners3D.size());
@@ -133,27 +132,56 @@ int main()
   std::vector<std::array<double, 3>> all_tvecs_right(commonCorners3D.size());
 
   // Add intrinsic and distortion to parameter block
+#if SKEW_COEFFICIENT
   double K_l[5] = {K_left.at<double>(0, 0), K_left.at<double>(1, 1), K_left.at<double>(0, 2), K_left.at<double>(1, 2), K_left.at<double>(0, 1)};
-  double d_l[5] = {D_left.at<double>(0, 0), D_left.at<double>(1, 0), D_left.at<double>(2, 0), D_left.at<double>(3, 0), D_left.at<double>(4, 0)};
-  double K_r[5] = {K_right.at<double>(0, 0), K_right.at<double>(1, 1), K_right.at<double>(0, 2), K_right.at<double>(1, 2), K_right.at<double>(0, 1)};
-  double d_r[5] = {D_right.at<double>(0, 0), D_right.at<double>(1, 0), D_right.at<double>(2, 0), D_right.at<double>(3, 0), D_right.at<double>(4, 0)};
+#else
+  double K_l[4] = {K_left.at<double>(0, 0), K_left.at<double>(1, 1), K_left.at<double>(0, 2), K_left.at<double>(1, 2)};
+#endif
 
-  problem.AddParameterBlock(K_l, 5);  // [fx, fy, cx, cy]
+  double d_l[5] = {D_left.at<double>(0, 0), D_left.at<double>(0, 1), D_left.at<double>(0, 2), D_left.at<double>(0, 3), D_left.at<double>(0, 4)};
+
+#if SKEW_COEFFICIENT
+  double K_r[5] = {K_right.at<double>(0, 0), K_right.at<double>(1, 1), K_right.at<double>(0, 2), K_right.at<double>(1, 2), K_right.at<double>(0, 1)};
+#else
+  double K_r[4] = {K_right.at<double>(0, 0), K_right.at<double>(1, 1), K_right.at<double>(0, 2), K_right.at<double>(1, 2)};
+#endif
+
+  double d_r[5] = {D_right.at<double>(0, 0), D_right.at<double>(0, 1), D_right.at<double>(0, 2), D_right.at<double>(0, 3), D_right.at<double>(0, 4)};
+
+#if SKEW_COEFFICIENT
+  problem.AddParameterBlock(K_l, 5);  // [fx, fy, cx, cy, s]
+#else
+  problem.AddParameterBlock(K_l, 4);
+#endif
   problem.AddParameterBlock(d_l, 5);  // [k1, k2, p1, p2, k3]
+
+#if SKEW_COEFFICIENT
   problem.AddParameterBlock(K_r, 5);
+#else
+  problem.AddParameterBlock(K_r, 4);
+#endif
   problem.AddParameterBlock(d_r, 5);
 
-#ifdef FIX_INTRINSIC
-  problem.SetParameterBlockConstant(K_l);
-  problem.SetParameterBlockConstant(d_l);
-  problem.SetParameterBlockConstant(K_r);
-  problem.SetParameterBlockConstant(d_r);
-#else
-  problem.SetParameterBlockVariable(K_l);
-  problem.SetParameterBlockVariable(d_l);
-  problem.SetParameterBlockVariable(K_r);
-  problem.SetParameterBlockVariable(d_r);
+  if (IS_INTRINSIC_FIXED)
+  {
+    problem.SetParameterBlockConstant(K_l);
+    problem.SetParameterBlockConstant(d_l);
+    problem.SetParameterBlockConstant(K_r);
+    problem.SetParameterBlockConstant(d_r);
+  }
+  else
+  {
+    problem.SetParameterBlockVariable(K_l);
+    problem.SetParameterBlockVariable(d_l);
+    problem.SetParameterBlockVariable(K_r);
+    problem.SetParameterBlockVariable(d_r);
+#if SKEW_COEFFICIENT
+    problem.SetParameterLowerBound(K_l, 4, -0.1);
+    problem.SetParameterUpperBound(K_l, 4, 0.1);
+    problem.SetParameterLowerBound(K_r, 4, -0.1);
+    problem.SetParameterUpperBound(K_r, 4, 0.1);
 #endif
+  }
 
   //Add extrinsic to parameter block
   cv::Mat rvec_stereo_init;
@@ -177,17 +205,20 @@ int main()
     problem.AddParameterBlock(all_rvecs_right[i].data(), 3);
     problem.AddParameterBlock(all_tvecs_right[i].data(), 3);
 
-#ifdef FIX_INTRINSIC
-  problem.SetParameterBlockConstant(all_rvecs_left[i].data());
-  problem.SetParameterBlockConstant(all_tvecs_left[i].data());
-  problem.SetParameterBlockConstant(all_rvecs_right[i].data());
-  problem.SetParameterBlockConstant(all_tvecs_right[i].data());
-#else
-  problem.SetParameterBlockVariable(all_rvecs_left[i].data());
-  problem.SetParameterBlockVariable(all_tvecs_left[i].data());
-  problem.SetParameterBlockVariable(all_rvecs_right[i].data());
-  problem.SetParameterBlockVariable(all_tvecs_right[i].data());
-#endif
+    if (IS_INTRINSIC_FIXED)
+    {
+      problem.SetParameterBlockConstant(all_rvecs_left[i].data());
+      problem.SetParameterBlockConstant(all_tvecs_left[i].data());
+      problem.SetParameterBlockConstant(all_rvecs_right[i].data());
+      problem.SetParameterBlockConstant(all_tvecs_right[i].data());
+    }
+    else
+    {
+      problem.SetParameterBlockVariable(all_rvecs_left[i].data());
+      problem.SetParameterBlockVariable(all_tvecs_left[i].data());
+      problem.SetParameterBlockVariable(all_rvecs_right[i].data());
+      problem.SetParameterBlockVariable(all_tvecs_right[i].data());
+    }
 
     for (size_t j = 0; j < commonCorners3D[i].size(); j++)
     {
@@ -235,10 +266,11 @@ int main()
   options.dense_linear_algebra_library_type = ceres::CUDA;
   // should test
   options.initial_trust_region_radius = 1e3;
-  options.max_trust_region_radius = 1e16;
-  options.min_lm_diagonal = 1e-4;
-  options.max_lm_diagonal = 1e4;
+  options.max_trust_region_radius = 1e10;
+  options.min_lm_diagonal = 1e-6;
+  options.max_lm_diagonal = 1e6;
   options.max_num_iterations = 500;
+  options.use_nonmonotonic_steps = true;
 
   // Solve
   ceres::Solver::Summary summary;
@@ -247,17 +279,29 @@ int main()
 
   // Optimization Results
   // Intrinsic - Left camera
+#if SKEW_COEFFICIENT
   cv::Mat K_left_optim = (cv::Mat_<double>(3, 3) << K_l[0], K_l[4], K_l[2],
                                                0.0, K_l[1], K_l[3],
                                                0.0, 0.0, 1.0);
+#else
+  cv::Mat K_left_optim = (cv::Mat_<double>(3, 3) << K_l[0], 0, K_l[2],
+                                               0.0, K_l[1], K_l[3],
+                                               0.0, 0.0, 1.0);
+#endif
   cv::Mat D_left_optim = cv::Mat(1, 5, CV_64F, d_l).clone();
   std::cout << "Optimized left - K: " << K_left_optim << std::endl;
   std::cout << "Optimized left - D: " << D_left_optim << std::endl;
 
   // Intrinsic - Right camera
+#if SKEW_COEFFICIENT
   cv::Mat K_right_optim = (cv::Mat_<double>(3, 3) << K_r[0], K_r[4], K_r[2],
                                               0.0, K_r[1], K_r[3],
                                               0.0, 0.0, 1.0);
+#else
+  cv::Mat K_right_optim = (cv::Mat_<double>(3, 3) << K_r[0], 0.0, K_r[2],
+                                              0.0, K_r[1], K_r[3],
+                                              0.0, 0.0, 1.0);
+#endif
   cv::Mat D_right_optim = cv::Mat(1, 5, CV_64F, d_r).clone();
   std::cout << "Optimized right - K: " << K_right_optim << std::endl;
   std::cout << "Optimized right - D: " << D_right_optim << std::endl;

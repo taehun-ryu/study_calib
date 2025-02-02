@@ -94,11 +94,19 @@ double calibrateCamera(SingleCamera& camera,
 
   // 6. Optimize total projection error
   ceres::Problem problem;
+#if SKEW_COEFFICIENT
   double K[5] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2), K_init.at<double>(0, 1)};
+#else
+  double K[4] = {K_init.at<double>(0, 0), K_init.at<double>(1, 1), K_init.at<double>(0, 2), K_init.at<double>(1, 2)};
+#endif
   double D[5] = {D_init.at<double>(0, 0), D_init.at<double>(1, 0), D_init.at<double>(2, 0), D_init.at<double>(3, 0), D_init.at<double>(4, 0)};
 
   // Add K and D to parameter
+#if SKEW_COEFFICIENT
   problem.AddParameterBlock(K, 5);  // [fx, fy, cx, cy, s]
+#else
+  problem.AddParameterBlock(K, 4);
+#endif
   problem.AddParameterBlock(D, 5);  // [k1, k2, p1, p2, k3]
 
   std::vector<std::array<double, 3>> all_rvecs(allObjPoints3D.size());
@@ -120,8 +128,13 @@ double calibrateCamera(SingleCamera& camera,
 
       // Residual
       problem.AddResidualBlock(
+#if SKEW_COEFFICIENT
         new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 5, 5>(
             new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
+#else
+        new ceres::AutoDiffCostFunction<CalibrationReprojectionError, 2, 3, 3, 4, 5>(
+            new CalibrationReprojectionError(obj.x, obj.y, img.x, img.y)),
+#endif
         loss_function,
         all_rvecs[i].data(),  // rvec on image[i]
         all_tvecs[i].data(),  // tvec on image[i]
@@ -140,8 +153,7 @@ double calibrateCamera(SingleCamera& camera,
   options.min_lm_diagonal = 1e-6;
   options.max_lm_diagonal = 1e6;
   options.max_num_iterations = 500;
-  options.minimizer_progress_to_stdout = true;
-  options.logging_type = ceres::PER_MINIMIZER_ITERATION;
+  options.minimizer_progress_to_stdout = false;
 
   // Solve
   ceres::Solver::Summary summary;
@@ -149,9 +161,15 @@ double calibrateCamera(SingleCamera& camera,
 
   convertVecArray2VecCVMat(all_rvecs, rvecs);
   convertVecArray2VecCVMat(all_tvecs, tvecs);
+#if SKEW_COEFFICIENT
   K_optim = (cv::Mat_<double>(3, 3) << K[0], K[4], K[2],
                                         0.0, K[1], K[3],
                                         0.0, 0.0, 1.0);
+#else
+  K_optim = (cv::Mat_<double>(3, 3) << K[0], 0.0, K[2],
+                                        0.0, K[1], K[3],
+                                        0.0, 0.0, 1.0);
+#endif
   D_optim = cv::Mat(1, 5, CV_64F, D).clone();
 
   // evaluate
@@ -372,8 +390,8 @@ void evaluateStereoCalibration(SingleCamera& left_camera, SingleCamera& right_ca
   }
 }
 
-#define RESIDUAL_SCALE_REPROJECTION 0.5
-#define RESIDUAL_SCALE_EPIPOLAR 0.5
+#define RESIDUAL_SCALE_REPROJECTION 1.0
+#define RESIDUAL_SCALE_EPIPOLAR 1.0
 // -----------------------------
 // Reprojection Error Cost Functor
 // -----------------------------
@@ -401,11 +419,15 @@ struct StereoReprojectionResidual
     // 2) Right camera coordinate -> Right camera's pixel coordinate
     auto right_proj_from_left = projetCamera2Pixel(right_pt_from_left.data(), K_right, d_right);
 
+    auto right_proj = projetWorld2Pixel(object_pt, K_right, d_right, rvec_right, tvec_right);
+
     const T scale = T(RESIDUAL_SCALE_REPROJECTION);
     residual[0] = scale * (right_proj_from_left[0] - T(right_img_x_));
     residual[1] = scale * (right_proj_from_left[1] - T(right_img_y_));
     residual[2] = scale * (left_proj[0] - T(left_img_x_));
     residual[3] = scale * (left_proj[1] - T(left_img_y_));
+    residual[4] = scale * (right_proj[0] - T(right_img_x_));
+    residual[5] = scale * (right_proj[1] - T(right_img_x_));
 
     return true;
   }
@@ -414,8 +436,13 @@ struct StereoReprojectionResidual
                                      double left_img_x, double left_img_y,
                                      double right_img_x , double right_img_y)
   {
-    return (new ceres::AutoDiffCostFunction<StereoReprojectionResidual, 4, 5, 5, 5, 5, 3, 3, 3, 3, 3, 3>(
+#if SKEW_COEFFICIENT
+    return (new ceres::AutoDiffCostFunction<StereoReprojectionResidual, 6, 5, 5, 5, 5, 3, 3, 3, 3, 3, 3>(
         new StereoReprojectionResidual(common_obj_x, common_obj_y, left_img_x, left_img_y, right_img_x, right_img_y)));
+#else
+    return (new ceres::AutoDiffCostFunction<StereoReprojectionResidual, 6, 4, 5, 4, 5, 3, 3, 3, 3, 3, 3>(
+        new StereoReprojectionResidual(common_obj_x, common_obj_y, left_img_x, left_img_y, right_img_x, right_img_y)));
+#endif
   }
 
  private:
@@ -445,8 +472,12 @@ std::array<T, 2> StereoReprojectionResidual::projetCamera2Pixel(const T* points3
   T x_distorted = x * radial_distortion + T(2.0) * d[2] * x * y + d[3] * (r2 + T(2.0) * x * x);
   T y_distorted = y * radial_distortion + d[2] * (r2 + T(2.0) * y * y) + T(2.0) * d[3] * x * y;
 
-  // K = [fx, fy, cx, cy]
+#if SKEW_COEFFICIENT
+  // K = [fx, fy, cx, cy, s]
   T predicted_x = K[0] * x_distorted + K[4] * y_distorted + K[2];
+#else
+  T predicted_x = K[0] * x_distorted + K[2];
+#endif
   T predicted_y = K[1] * y_distorted + K[3];
 
   return {predicted_x, predicted_y};
@@ -493,32 +524,29 @@ std::array<T, 3> StereoReprojectionResidual::transformWorldLeftRight(const T* sr
 // -----------------------------
 struct StereoEpipolarResidual {
   StereoEpipolarResidual(double left_img_x, double left_img_y,
-                                             double right_img_x, double right_img_y)
-      : left_img_x_(left_img_x), left_img_y_(left_img_y),
-        right_img_x_(right_img_x), right_img_y_(right_img_y) {}
+                           double right_img_x, double right_img_y)
+    : left_img_x_(left_img_x), left_img_y_(left_img_y), right_img_x_(right_img_x), right_img_y_(right_img_y) {}
 
-  // operator(): 입력 parameter block 순서:
-  // 1) K_left: 5 parameters ([fx, fy, cx, cy, skew])
-  // 2) K_right: 5 parameters ([fx, fy, cx, cy, skew])
-  // 3) rvec: 3 parameters (global stereo rotation, angle-axis)
-  // 4) tvec: 3 parameters (global stereo translation)
+  // Templated operator() with parameter blocks:
+  // K_left: 5 parameters ([fx, fy, cx, cy, skew])
+  // K_right: 5 parameters ([fx, fy, cx, cy, skew])
+  // rvec: 3 parameters (global stereo rotation in angle-axis)
+  // tvec: 3 parameters (global stereo translation)
   template <typename T>
-  bool operator()(const T* const K_left,  // 변수 파라미터로 받음 (size 5)
-                  const T* const K_right, // 변수 파라미터로 받음 (size 5)
-                  const T* const rvec,    // size 3
-                  const T* const tvec,    // size 3
-                  T* residual) const {
-    // 1. rvec로부터 회전행렬 R (3x3)을 계산
+  bool operator()(const T* const K_left, const T* const K_right,
+                  const T* const rvec, const T* const tvec,
+                  T* residual) const
+  {
     T R[9];
     ceres::AngleAxisToRotationMatrix(rvec, R);
 
-    // 2. tvec로부터 skew-symmetric 행렬 [t]_x 계산
+    // skew-symmetric matrix [t]_x from tvec.
     T tx[9];
     tx[0] = T(0);      tx[1] = -tvec[2];  tx[2] = tvec[1];
     tx[3] = tvec[2];   tx[4] = T(0);      tx[5] = -tvec[0];
     tx[6] = -tvec[1];  tx[7] = tvec[0];   tx[8] = T(0);
 
-    // 3. Essential matrix E = [t]_x * R 계산
+    // Essential matrix E = [t]_x * R.
     T E[9];
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < 3; ++j) {
@@ -529,14 +557,13 @@ struct StereoEpipolarResidual {
       }
     }
 
-    // 4. 변수로 주어진 K_left와 K_right로부터 각각 inverse와 우측의 inverse 전치를 계산
+    // Inverse of K_left and (K_right^{-1})^T.
     T K_left_inv[9];
-    ComputeIntrinsicInverse(K_left, K_left_inv);  // 템플릿 함수 호출
-
+    ComputeIntrinsicInverse(K_left, K_left_inv);
     T K_right_invT[9];
     ComputeIntrinsicRightInvT(K_right, K_right_invT);
 
-    // 5. Fundamental matrix F = K_right_invT * E * K_left_inv 계산
+    // Fundamental Matrix F = K_right^-T * E * K_left^-1
     T temp[9];
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < 3; ++j) {
@@ -556,11 +583,10 @@ struct StereoEpipolarResidual {
       }
     }
 
-    // 6. 관측된 좌측/우측 이미지 점을 동차 좌표로 구성: [x, y, 1]^T
     T x_left[3]  = { T(left_img_x_), T(left_img_y_), T(1.0) };
     T x_right[3] = { T(right_img_x_), T(right_img_y_), T(1.0) };
 
-    // 7. 에피폴라 제약: x_right^T * F * x_left 계산
+    // Epipolar Constraint: x_right^T * F * x_left = 0
     T Fx[3];
     for (int i = 0; i < 3; ++i) {
       Fx[i] = T(0);
@@ -573,59 +599,85 @@ struct StereoEpipolarResidual {
       xTFx += x_right[i] * Fx[i];
     }
 
-    // 8. Sampson error의 분모: sqrt((F*x_left)[0]^2 + (F*x_left)[1]^2 + epsilon)
-    T denom = ceres::sqrt(Fx[0] * Fx[0] + Fx[1] * Fx[1] + T(1e-8));
+    // Compute denominator for Sampson error.
+    T epsilon = T(1e-8);
+    T denom = ceres::sqrt(Fx[0] * Fx[0] + Fx[1] * Fx[1] + epsilon);
 
-    // 최종 residual: Sampson error
-    residual[0] = xTFx / denom;
+    // Prevent division by zero.
+    if (denom < T(1e-12))
+    {
+      residual[0] = T(0);
+    } else
+    {
+      T scale = T(RESIDUAL_SCALE_EPIPOLAR);
+      residual[0] = scale * (xTFx / denom);
+    }
     return true;
   }
 
-  // 템플릿 함수: K (5개 파라미터)로부터 3x3 intrinsic inverse를 계산 (row-major order)
-  template <typename T>
-  static void ComputeIntrinsicInverse(const T* const K, T* K_inv) {
-    // K = [fx, fy, cx, cy, skew]
-    T fx = K[0];
-    T fy = K[1];
-    T cx = K[2];
-    T cy = K[3];
-    T skew = K[4];
-    K_inv[0] = T(1) / fx;
-    K_inv[1] = -skew / (fx * fy);
-    K_inv[2] = (skew * cy - cx * fy) / (fx * fy);
-    K_inv[3] = T(0);
-    K_inv[4] = T(1) / fy;
-    K_inv[5] = -cy / fy;
-    K_inv[6] = T(0);
-    K_inv[7] = T(0);
-    K_inv[8] = T(1);
-  }
-
-  // 템플릿 함수: K_right_invT = (K_right^{-1})^T 계산
-  template <typename T>
-  static void ComputeIntrinsicRightInvT(const T* const K, T* K_right_invT) {
-    T K_inv[9];
-    ComputeIntrinsicInverse(K, K_inv);
-    // Transpose: (K_inv)^T
-    K_right_invT[0] = K_inv[0];
-    K_right_invT[1] = K_inv[3];
-    K_right_invT[2] = K_inv[6];
-    K_right_invT[3] = K_inv[1];
-    K_right_invT[4] = K_inv[4];
-    K_right_invT[5] = K_inv[7];
-    K_right_invT[6] = K_inv[2];
-    K_right_invT[7] = K_inv[5];
-    K_right_invT[8] = K_inv[8];
-  }
-
-  // CostFunction 생성: Parameter block sizes: K_left (5), K_right (5), rvec (3), tvec (3)
+  // Factory method to create a CostFunction.
   static ceres::CostFunction* Create(double left_img_x, double left_img_y,
-                                     double right_img_x, double right_img_y) {
+                                     double right_img_x, double right_img_y)
+  {
+#if SKEW_COEFFICIENT
     return (new ceres::AutoDiffCostFunction<StereoEpipolarResidual, 1, 5, 5, 3, 3>(
-      new StereoEpipolarResidual(left_img_x, left_img_y, right_img_x, right_img_y)));
+               new StereoEpipolarResidual(left_img_x, left_img_y, right_img_x, right_img_y)));
+#else
+    return (new ceres::AutoDiffCostFunction<StereoEpipolarResidual, 1, 4, 4, 3, 3>(
+               new StereoEpipolarResidual(left_img_x, left_img_y, right_img_x, right_img_y)));
+#endif
   }
 
-  // Observed image coordinates
+ private:
   const double left_img_x_, left_img_y_;
   const double right_img_x_, right_img_y_;
+  template <typename T>
+  static void ComputeIntrinsicInverse(const T* const K, T* K_inv);
+  template <typename T>
+  static void ComputeIntrinsicRightInvT(const T* const K, T* K_right_invT);
 };
+
+// Given intrinsic K (5 parameters: [fx, fy, cx, cy, skew]),
+// compute K_inv (3x3, row-major order).
+template <typename T>
+void StereoEpipolarResidual::ComputeIntrinsicInverse(const T* const K, T* K_inv) {
+  // K = [fx, fy, cx, cy, skew]
+  T fx = K[0];
+  T fy = K[1];
+  T cx = K[2];
+  T cy = K[3];
+#if SKEW_COEFFICIENT
+  T skew = K[4];
+#else
+  T skew = T(0.0);
+#endif
+  // Prevent division by zero.
+  if (fx < T(1e-8)) fx = T(1e-8);
+  if (fy < T(1e-8)) fy = T(1e-8);
+  K_inv[0] = T(1) / fx;
+  K_inv[1] = -skew / (fx * fy);
+  K_inv[2] = (skew * cy - cx * fy) / (fx * fy);
+  K_inv[3] = T(0);
+  K_inv[4] = T(1) / fy;
+  K_inv[5] = -cy / fy;
+  K_inv[6] = T(0);
+  K_inv[7] = T(0);
+  K_inv[8] = T(1);
+}
+
+// Compute K_right_invT = (K_right^{-1})^T.
+template <typename T>
+void StereoEpipolarResidual::ComputeIntrinsicRightInvT(const T* const K, T* K_right_invT) {
+  T K_inv[9];
+  ComputeIntrinsicInverse(K, K_inv);
+  // Transpose K_inv.
+  K_right_invT[0] = K_inv[0];
+  K_right_invT[1] = K_inv[3];
+  K_right_invT[2] = K_inv[6];
+  K_right_invT[3] = K_inv[1];
+  K_right_invT[4] = K_inv[4];
+  K_right_invT[5] = K_inv[7];
+  K_right_invT[6] = K_inv[2];
+  K_right_invT[7] = K_inv[5];
+  K_right_invT[8] = K_inv[8];
+}
