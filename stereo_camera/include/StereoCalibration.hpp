@@ -210,9 +210,9 @@ void visualizeCommonCorners(cv::Mat image_left, cv::Mat image_right,
   }
 
   for (const auto& pt : unique_left)
-    cv::circle(vis_left, pt, 5, cv::Scalar(255,0,0), -1);
+    cv::circle(vis_left, pt, 5, cv::Scalar(0,0,255), -1);
   for (const auto& pt : unique_right)
-    cv::circle(vis_right, pt, 5, cv::Scalar(0,255,0), -1);
+    cv::circle(vis_right, pt, 5, cv::Scalar(0,0,255), -1);
   for (const auto& pt : corners_common_left)
     cv::circle(vis_left, pt, 5, cv::Scalar(0,255,0), -1);
   for (const auto& pt : corners_common_right)
@@ -525,9 +525,10 @@ std::array<T, 3> StereoReprojectionResidual::transformWorldLeftRight(const T* sr
 struct StereoEpipolarResidual {
   StereoEpipolarResidual(double left_img_x, double left_img_y,
                            double right_img_x, double right_img_y)
-    : left_img_x_(left_img_x), left_img_y_(left_img_y), right_img_x_(right_img_x), right_img_y_(right_img_y) {}
+    : left_img_x_(left_img_x), left_img_y_(left_img_y),
+      right_img_x_(right_img_x), right_img_y_(right_img_y) {}
 
-  // Templated operator() with parameter blocks:
+  // Parameter blocks:
   // K_left: 5 parameters ([fx, fy, cx, cy, skew])
   // K_right: 5 parameters ([fx, fy, cx, cy, skew])
   // rvec: 3 parameters (global stereo rotation in angle-axis)
@@ -537,16 +538,17 @@ struct StereoEpipolarResidual {
                   const T* const rvec, const T* const tvec,
                   T* residual) const
   {
+    // Convert angle-axis rvec to rotation matrix R (3x3)
     T R[9];
     ceres::AngleAxisToRotationMatrix(rvec, R);
 
-    // skew-symmetric matrix [t]_x from tvec.
+    // Construct skew-symmetric matrix [t]_x from tvec.
     T tx[9];
     tx[0] = T(0);      tx[1] = -tvec[2];  tx[2] = tvec[1];
     tx[3] = tvec[2];   tx[4] = T(0);      tx[5] = -tvec[0];
     tx[6] = -tvec[1];  tx[7] = tvec[0];   tx[8] = T(0);
 
-    // Essential matrix E = [t]_x * R.
+    // Essential matrix: E = [t]_x * R.
     T E[9];
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < 3; ++j) {
@@ -557,13 +559,13 @@ struct StereoEpipolarResidual {
       }
     }
 
-    // Inverse of K_left and (K_right^{-1})^T.
+    // Compute inverse of K_left and (K_right^{-1})^T.
     T K_left_inv[9];
     ComputeIntrinsicInverse(K_left, K_left_inv);
     T K_right_invT[9];
     ComputeIntrinsicRightInvT(K_right, K_right_invT);
 
-    // Fundamental Matrix F = K_right^-T * E * K_left^-1
+    // Fundamental matrix: F = K_right^{-T} * E * K_left^{-1}
     T temp[9];
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < 3; ++j) {
@@ -583,10 +585,11 @@ struct StereoEpipolarResidual {
       }
     }
 
+    // Define homogeneous image coordinates.
     T x_left[3]  = { T(left_img_x_), T(left_img_y_), T(1.0) };
     T x_right[3] = { T(right_img_x_), T(right_img_y_), T(1.0) };
 
-    // Epipolar Constraint: x_right^T * F * x_left = 0
+    // Compute F * x_left.
     T Fx[3];
     for (int i = 0; i < 3; ++i) {
       Fx[i] = T(0);
@@ -594,45 +597,59 @@ struct StereoEpipolarResidual {
         Fx[i] += F[3 * i + j] * x_left[j];
       }
     }
+    // Compute F^T * x_right.
+    T FTx[3];
+    for (int i = 0; i < 3; ++i) {
+      FTx[i] = T(0);
+      for (int j = 0; j < 3; ++j) {
+        // F^T(i,j) = F(3*j + i)
+        FTx[i] += F[3 * j + i] * x_right[j];
+      }
+    }
+
+    // Compute the epipolar constraint value: x_right^T * F * x_left.
     T xTFx = T(0);
     for (int i = 0; i < 3; ++i) {
       xTFx += x_right[i] * Fx[i];
     }
 
-    // Compute denominator for Sampson error.
+    // Compute denominator for Sampson error:
+    // denom = sqrt((Fx[0])^2 + (Fx[1])^2 + (FTx[0])^2 + (FTx[1])^2 + epsilon)
     T epsilon = T(1e-8);
-    T denom = ceres::sqrt(Fx[0] * Fx[0] + Fx[1] * Fx[1] + epsilon);
+    T denom = ceres::sqrt(Fx[0] * Fx[0] + Fx[1] * Fx[1] +
+                           FTx[0] * FTx[0] + FTx[1] * FTx[1] + epsilon);
 
-    // Prevent division by zero.
-    if (denom < T(1e-12))
-    {
+    // Use a scale factor for residual if needed.
+    T scale = T(RESIDUAL_SCALE_EPIPOLAR);
+    // Compute the final residual.
+    if (denom < T(1e-12)) {
       residual[0] = T(0);
-    } else
-    {
-      T scale = T(RESIDUAL_SCALE_EPIPOLAR);
+    } else {
       residual[0] = scale * (xTFx / denom);
     }
     return true;
   }
 
-  // Factory method to create a CostFunction.
+  // Factory method.
   static ceres::CostFunction* Create(double left_img_x, double left_img_y,
                                      double right_img_x, double right_img_y)
   {
 #if SKEW_COEFFICIENT
     return (new ceres::AutoDiffCostFunction<StereoEpipolarResidual, 1, 5, 5, 3, 3>(
-               new StereoEpipolarResidual(left_img_x, left_img_y, right_img_x, right_img_y)));
+        new StereoEpipolarResidual(left_img_x, left_img_y, right_img_x, right_img_y)));
 #else
     return (new ceres::AutoDiffCostFunction<StereoEpipolarResidual, 1, 4, 4, 3, 3>(
-               new StereoEpipolarResidual(left_img_x, left_img_y, right_img_x, right_img_y)));
+        new StereoEpipolarResidual(left_img_x, left_img_y, right_img_x, right_img_y)));
 #endif
   }
 
  private:
   const double left_img_x_, left_img_y_;
   const double right_img_x_, right_img_y_;
+
   template <typename T>
   static void ComputeIntrinsicInverse(const T* const K, T* K_inv);
+
   template <typename T>
   static void ComputeIntrinsicRightInvT(const T* const K, T* K_right_invT);
 };
