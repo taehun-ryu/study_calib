@@ -182,8 +182,12 @@ int main()
   double reprojection_err;
   reprojection_err = calculateReprojectionError(allObjPoints3D, allCornersImg, rvecs, tvecs, K_optim, D_optim);
   std::cout << "Reprojection Error(RMSE): " << reprojection_err << std::endl;
-  validateDistortionCorrection(camera.getImage(0), K_optim, D_optim);
-  visualizeReprojection(camera.getImage(0), allObjPoints3D[0], allCornersImg[0], rvecs[0], tvecs[0], K_optim, D_optim);
+  for (int i = 0; i < 1; i++)
+  {
+    validateDistortionCorrection(camera.getImage(i), K_optim, D_optim);
+    visualizeReprojection(camera.getImage(i), allObjPoints3D[i], allCornersImg[i], rvecs[i], tvecs[i], K_optim, D_optim);
+  }
+
 
   return 0;
 }
