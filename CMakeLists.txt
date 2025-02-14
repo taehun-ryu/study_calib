@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(calibration)
 
 # 전처리기 세팅
-option(SKEW_COEFFICIENT "Skew coefficient modeling" ON)
+option(SKEW_COEFFICIENT "Skew coefficient modeling" OFF)
 
 # 인터페이스 라이브러리 생성
 add_library(global_defines INTERFACE)

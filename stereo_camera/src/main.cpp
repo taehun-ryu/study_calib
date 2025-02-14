@@ -3,7 +3,7 @@
 #include "SingleCalibration.hpp"
 #include "StereoCalibration.hpp"
 
-#define IS_INTRINSIC_FIXED false
+#define IS_INTRINSIC_FIXED true
 
 int main(int argc, char** argv)
 {
@@ -108,16 +108,11 @@ int main(int argc, char** argv)
     // t_stereo_i = t_right_i - R_stereo_i * t_left_i
     t_stereo_candidates[i] = (tvecs_right[i]) - (R_stereo_candidates[i] * tvecs_left[i]);
   }
-  // Rotation average
-  cv::Mat R_stereo_init = averageRotationMatrix(R_stereo_candidates);
 
-  // Translation average
-  cv::Mat t_stereo_init = cv::Mat::zeros(3,1,CV_64F);
-  for (int i = 0; i < numImages; ++i)
-  {
-    t_stereo_init += t_stereo_candidates[i];
-  }
-  t_stereo_init /= (double)numImages;
+  // Sellect one value
+  int selected_idx = int(numImages / 2);
+  cv::Mat R_stereo_init = R_stereo_candidates[selected_idx];
+  cv::Mat t_stereo_init = t_stereo_candidates[selected_idx];
 
   // Left -> Right
   std::cout << "Initial R_stereo = \n" << R_stereo_init << std::endl;
@@ -188,6 +183,8 @@ int main(int argc, char** argv)
   cv::Rodrigues(R_stereo_init, rvec_stereo_init);
   double rvec_init[3] = {rvec_stereo_init.at<double>(0,0), rvec_stereo_init.at<double>(1,0), rvec_stereo_init.at<double>(2,0)};
   double tvec_init[3] = {t_stereo_init.at<double>(0,0), t_stereo_init.at<double>(1,0), t_stereo_init.at<double>(2,0)};
+  std::cout << rvec_init[0] << "," << rvec_init[1] << "," << rvec_init[2] << std::endl;
+  std::cout << tvec_init[0] << "," << tvec_init[1] << "," << tvec_init[2] << std::endl;
 
   problem.AddParameterBlock(rvec_init, 3);
   problem.AddParameterBlock(tvec_init, 3);
@@ -226,7 +223,7 @@ int main(int argc, char** argv)
       cv::Point2f left_img = commonCorners_left[i][j];
       cv::Point2f right_img = commonCorners_right[i][j];
 
-      ceres::LossFunction* huber_loss_function = new ceres::HuberLoss(0.1);
+      ceres::LossFunction* huber_loss_function = new ceres::HuberLoss(1.0);
 
       problem.AddResidualBlock( // Add stereo reprojection risidual
         // Cost function
@@ -245,14 +242,14 @@ int main(int argc, char** argv)
         rvec_init,
         tvec_init
       );
-      problem.AddResidualBlock( // Add Epipolar Constraint
-        StereoEpipolarResidual::Create(left_img.x, left_img.y, right_img.x, right_img.y),
-        huber_loss_function,
-        K_l,
-        K_r,
-        rvec_init,
-        tvec_init
-      );
+      // problem.AddResidualBlock( // Add Epipolar Constraint
+      //   StereoEpipolarResidual::Create(left_img.x, left_img.y, right_img.x, right_img.y),
+      //   huber_loss_function,
+      //   K_l,
+      //   K_r,
+      //   rvec_init,
+      //   tvec_init
+      // );
     }
   }
 
@@ -266,11 +263,12 @@ int main(int argc, char** argv)
   options.dense_linear_algebra_library_type = ceres::CUDA;
   // should test
   options.initial_trust_region_radius = 1e3;
-  options.max_trust_region_radius = 1e10;
+  options.max_trust_region_radius = 1e5;
   options.min_lm_diagonal = 1e-6;
   options.max_lm_diagonal = 1e6;
   options.max_num_iterations = 500;
   options.use_nonmonotonic_steps = true;
+  options.update_state_every_iteration = true;
 
   // Solve
   ceres::Solver::Summary summary;
@@ -315,10 +313,12 @@ int main(int argc, char** argv)
 
   // 5. Evaluation
   // w/o Stereo BA
+  std::cout << "########## W/O STEREO BA ##########" << std::endl;
   evaluateStereoCalibration(left_camera, right_camera,
                             K_left, D_left, K_right, D_right, R_stereo_init, t_stereo_init,
                             commonCorners_left, commonCorners_right);
   // w/ Stereo BA
+  std::cout << "########## W/ STEREO BA ##########" << std::endl;
   evaluateStereoCalibration(left_camera, right_camera,
                             K_left_optim, D_left_optim, K_right_optim, D_right_optim, R_stereo, t_stereo,
                             commonCorners_left, commonCorners_right);

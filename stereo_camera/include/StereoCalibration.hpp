@@ -279,24 +279,6 @@ cv::Mat quaternionToRotationMatrix(const cv::Vec4d& q) {
   return R;
 }
 
-cv::Mat averageRotationMatrix(const std::vector<cv::Mat>& rotations) {
-  cv::Vec4d q_sum(0.0, 0.0, 0.0, 0.0);
-  for (const auto& R : rotations) {
-    cv::Vec4d q = rotationMatrixToQuaternion(R);
-    q_sum[0] += q[0];
-    q_sum[1] += q[1];
-    q_sum[2] += q[2];
-    q_sum[3] += q[3];
-  }
-  double norm_q = std::sqrt(q_sum[0]*q_sum[0] + q_sum[1]*q_sum[1] + q_sum[2]*q_sum[2] + q_sum[3]*q_sum[3]);
-  if (norm_q < 1e-8) {
-    return cv::Mat::eye(3,3,CV_64F);
-  }
-  cv::Vec4d q_avg(q_sum[0]/norm_q, q_sum[1]/norm_q, q_sum[2]/norm_q, q_sum[3]/norm_q);
-  cv::Mat R_avg = quaternionToRotationMatrix(q_avg);
-  return R_avg;
-}
-
 
 double computeVerticalErrorRMS(
   const std::vector<std::vector<cv::Point2f>>& commonCornersLeft,
@@ -390,8 +372,6 @@ void evaluateStereoCalibration(SingleCamera& left_camera, SingleCamera& right_ca
   }
 }
 
-#define RESIDUAL_SCALE_REPROJECTION 1.0
-#define RESIDUAL_SCALE_EPIPOLAR 1.0
 // -----------------------------
 // Reprojection Error Cost Functor
 // -----------------------------
@@ -407,27 +387,25 @@ struct StereoReprojectionResidual
                   const T* const K_right, const T* const d_right,
                   const T* const rvec_left, const T* const tvec_left,
                   const T* const rvec_right, const T* const tvec_right,
-                  const T* const rvec, const T* tvec,
+                  const T* const rvec_stereo, const T* tvec_stereo,
                   T* residual) const
   {
     T object_pt[3] = {T(common_obj_x_), T(common_obj_y_), T(0.0)};
-    // World -> Left camera's pixel coordinate
-    auto left_proj = projetWorld2Pixel(object_pt, K_left, d_left, rvec_left, tvec_left);
 
     // 1) World -> Left camera coordinate -> Right camera coordinate
-    auto right_pt_from_left = transformWorldLeftRight(object_pt, rvec, tvec, rvec_left, tvec_left);
+    auto right_pt_from_left = transformWorldLeftRight(object_pt, rvec_stereo, tvec_stereo, rvec_left, tvec_left);
     // 2) Right camera coordinate -> Right camera's pixel coordinate
     auto right_proj_from_left = projetCamera2Pixel(right_pt_from_left.data(), K_right, d_right);
 
-    auto right_proj = projetWorld2Pixel(object_pt, K_right, d_right, rvec_right, tvec_right);
+    // 1) World -> Right camera coordinate -> Left camera coordinate
+    auto left_pt_from_left = transformWorldRightLeft(object_pt, rvec_stereo, tvec_stereo, rvec_right, tvec_right);
+    // 2) Left camera coordinate -> Left camera's pixel coordinate
+    auto left_proj_from_right = projetCamera2Pixel(left_pt_from_left.data(), K_left, d_left);
 
-    const T scale = T(RESIDUAL_SCALE_REPROJECTION);
-    residual[0] = scale * (right_proj_from_left[0] - T(right_img_x_));
-    residual[1] = scale * (right_proj_from_left[1] - T(right_img_y_));
-    residual[2] = scale * (left_proj[0] - T(left_img_x_));
-    residual[3] = scale * (left_proj[1] - T(left_img_y_));
-    residual[4] = scale * (right_proj[0] - T(right_img_x_));
-    residual[5] = scale * (right_proj[1] - T(right_img_x_));
+    residual[0] = right_proj_from_left[0] - T(right_img_x_);
+    residual[1] = right_proj_from_left[1] - T(right_img_y_);
+    residual[2] = left_proj_from_right[0] - T(left_img_x_);
+    residual[3] = left_proj_from_right[1] - T(left_img_y_);
 
     return true;
   }
@@ -437,10 +415,10 @@ struct StereoReprojectionResidual
                                      double right_img_x , double right_img_y)
   {
 #if SKEW_COEFFICIENT
-    return (new ceres::AutoDiffCostFunction<StereoReprojectionResidual, 6, 5, 5, 5, 5, 3, 3, 3, 3, 3, 3>(
+    return (new ceres::AutoDiffCostFunction<StereoReprojectionResidual, 4, 5, 5, 5, 5, 3, 3, 3, 3, 3, 3>(
         new StereoReprojectionResidual(common_obj_x, common_obj_y, left_img_x, left_img_y, right_img_x, right_img_y)));
 #else
-    return (new ceres::AutoDiffCostFunction<StereoReprojectionResidual, 6, 4, 5, 4, 5, 3, 3, 3, 3, 3, 3>(
+    return (new ceres::AutoDiffCostFunction<StereoReprojectionResidual, 4, 4, 5, 4, 5, 3, 3, 3, 3, 3, 3>(
         new StereoReprojectionResidual(common_obj_x, common_obj_y, left_img_x, left_img_y, right_img_x, right_img_y)));
 #endif
   }
@@ -453,9 +431,9 @@ struct StereoReprojectionResidual
   template <typename T>
   std::array<T, 2> projetCamera2Pixel(const T *points3D, const T *K, const T *d)  const;
   template <typename T>
-  std::array<T, 2> projetWorld2Pixel(const T* points3D, const T* K, const T* d, const T *rvec, const T *tvec)  const;
-  template <typename T>
   std::array<T, 3> transformWorldLeftRight(const T* srcPoints, const T* rvec_stereo, const T* tvec_stereo, const T *rvec, const T *tvec) const;
+  template <typename T>
+  std::array<T, 3> transformWorldRightLeft(const T* srcPoints, const T* rvec_stereo, const T* tvec_stereo, const T *rvec, const T *tvec) const;
 };
 
 template<typename T>
@@ -484,21 +462,6 @@ std::array<T, 2> StereoReprojectionResidual::projetCamera2Pixel(const T* points3
 }
 
 template<typename T>
-std::array<T, 2> StereoReprojectionResidual::projetWorld2Pixel(const T* points3D, const T* K, const T* d, const T *rvec, const T *tvec) const
-{
-  T p_w[3] = {T(points3D[0]), T(points3D[1]), T(0.0)};
-  T p_c[3];
-  ceres::AngleAxisRotatePoint(rvec, p_w, p_c);
-  p_c[0] += tvec[0];
-  p_c[1] += tvec[1];
-  p_c[2] += tvec[2];
-
-  std::array<T, 2> pixel_pt = projetCamera2Pixel(p_c, K, d);
-
-  return {pixel_pt[0], pixel_pt[1]};
-}
-
-template<typename T>
 std::array<T, 3> StereoReprojectionResidual::transformWorldLeftRight(const T* srcPoints, const T* rvec_stereo, const T* tvec_stereo, const T *rvec, const T *tvec) const
 {
   // World -> Left camera coordinates
@@ -515,6 +478,36 @@ std::array<T, 3> StereoReprojectionResidual::transformWorldLeftRight(const T* sr
   dst[0] += tvec_stereo[0];
   dst[1] += tvec_stereo[1];
   dst[2] += tvec_stereo[2];
+
+  return dst;
+}
+
+template<typename T>
+std::array<T, 3> StereoReprojectionResidual::transformWorldRightLeft(const T* srcPoints, const T* rvec_stereo, const T* tvec_stereo, const T *rvec, const T *tvec) const
+{
+  // World -> Right camera coordinates
+  T p_w[3] = {T(srcPoints[0]), T(srcPoints[1]), T(0.0)};
+  T p_c[3];
+  ceres::AngleAxisRotatePoint(rvec, p_w, p_c);
+  p_c[0] += tvec[0];
+  p_c[1] += tvec[1];
+  p_c[2] += tvec[2];
+
+  // 1) Left -> Right: rvec_stereo, tvec_stereo
+  //    Right -> Left: -rvec_stereo,  R_lr^T * (-tvec_stereo)
+  T inverse_rvec[3];
+  inverse_rvec[0] = -rvec_stereo[0];
+  inverse_rvec[1] = -rvec_stereo[1];
+  inverse_rvec[2] = -rvec_stereo[2];
+
+  T p_c_minus_t[3];
+  p_c_minus_t[0] = p_c[0] - tvec_stereo[0];
+  p_c_minus_t[1] = p_c[1] - tvec_stereo[1];
+  p_c_minus_t[2] = p_c[2] - tvec_stereo[2];
+
+  // R_lr^T( p_c - t_lr )
+  std::array<T, 3> dst;
+  ceres::AngleAxisRotatePoint(inverse_rvec, p_c_minus_t, dst.data());
 
   return dst;
 }
@@ -618,14 +611,11 @@ struct StereoEpipolarResidual {
     T epsilon = T(1e-8);
     T denom = ceres::sqrt(Fx[0] * Fx[0] + Fx[1] * Fx[1] +
                            FTx[0] * FTx[0] + FTx[1] * FTx[1] + epsilon);
-
-    // Use a scale factor for residual if needed.
-    T scale = T(RESIDUAL_SCALE_EPIPOLAR);
     // Compute the final residual.
     if (denom < T(1e-12)) {
       residual[0] = T(0);
     } else {
-      residual[0] = scale * (xTFx / denom);
+      residual[0] = xTFx / denom;
     }
     return true;
   }
